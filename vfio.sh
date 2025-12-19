@@ -31,6 +31,19 @@ DRY_RUN=0
 MODE="install"   # install | verify
 RUN_TS="$(date +%Y%m%d-%H%M%S)"
 
+# Color output (ANSI). Set NO_COLOR=1 to disable.
+ENABLE_COLOR=1
+if [[ -n "${NO_COLOR:-}" ]]; then
+  ENABLE_COLOR=0
+fi
+
+CSI=$'\033['
+C_RESET="${CSI}0m"
+C_BOLD="${CSI}1m"
+C_RED="${CSI}31m"
+C_GREEN="${CSI}32m"
+C_BLUE="${CSI}34m"
+
 # Track backups for rollback script generation
 declare -A BACKUP_MAP=()
 BACKUP_ENTRIES=()
@@ -298,6 +311,25 @@ vendor_name() {
     10de) echo "NVIDIA";;
     8086) echo "Intel";;
     *) echo "vendor:$1";;
+  esac
+}
+
+vendor_label() {
+  # Prints vendor name, optionally colorized.
+  local vid="${1,,}"
+  local name
+  name="$(vendor_name "$vid")"
+
+  if (( ! ENABLE_COLOR )); then
+    echo "$name"
+    return 0
+  fi
+
+  case "$vid" in
+    1002) echo "${C_BOLD}${C_RED}${name}${C_RESET}";;   # AMD = red
+    10de) echo "${C_BOLD}${C_GREEN}${name}${C_RESET}";; # NVIDIA = green
+    8086) echo "${C_BOLD}${C_BLUE}${name}${C_RESET}";;  # Intel = blue
+    *) echo "${C_BOLD}${name}${C_RESET}";;
   esac
 }
 
@@ -1154,7 +1186,7 @@ main() {
   local -a options=()
   local i
   for i in "${!gpu_bdfs[@]}"; do
-    options+=("${gpu_bdfs[$i]}  ::  $(vendor_name "${gpu_vendor_ids[$i]}")  ::  ${gpu_descs[$i]}  (slot audio: ${gpu_audio_bdfs_csv[$i]})")
+    options+=("${gpu_bdfs[$i]}  ::  $(vendor_label "${gpu_vendor_ids[$i]}")  ::  ${gpu_descs[$i]}  (slot audio: ${gpu_audio_bdfs_csv[$i]})")
   done
 
   local guest_idx host_idx
@@ -1202,7 +1234,7 @@ main() {
   local abdf adesc avendor adev
   while IFS=$'\t' read -r abdf adesc avendor adev; do
     aud_bdfs+=("$abdf")
-    aud_opts+=("$abdf  ::  $(vendor_name "$avendor")  ::  $adesc  [$avendor:$adev]")
+    aud_opts+=("$abdf  ::  $(vendor_label "$avendor")  ::  $adesc  [$avendor:$adev]")
   done < <(audio_devices_discover_all)
 
   if (( ${#aud_bdfs[@]} > 0 )); then
