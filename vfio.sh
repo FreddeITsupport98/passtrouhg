@@ -138,10 +138,18 @@ assert_not_equal() {
 confirm_phrase() {
   # confirm_phrase "Prompt" "PHRASE"
   local prompt="$1" phrase="$2" ans
-  say "$prompt"
-  say "Type exactly: $phrase"
-  printf '> '
-  read -r ans
+
+  # Prefer /dev/tty so sudo / redirected stdin doesn't break prompts.
+  local in="/dev/stdin" out="/dev/stdout"
+  if [[ -t 0 && -t 1 && -r /dev/tty && -w /dev/tty ]]; then
+    in="/dev/tty"
+    out="/dev/tty"
+  fi
+
+  printf '%s\n' "$prompt" >"$out"
+  printf '%s\n' "Type exactly: $phrase" >"$out"
+  printf '> ' >"$out"
+  read -r ans <"$in"
   [[ "$ans" == "$phrase" ]]
 }
 
@@ -290,15 +298,23 @@ select_from_list() {
   local -a options=("$@")
   local idx
 
+  # Prefer /dev/tty so sudo / redirected stdin doesn't break interactive selection.
+  local in="/dev/stdin" out="/dev/stdout"
+  if [[ -t 0 && -t 1 && -r /dev/tty && -w /dev/tty ]]; then
+    in="/dev/tty"
+    out="/dev/tty"
+  fi
+
   while true; do
-    say "$prompt"
+    printf '\n%s\n' "$prompt" >"$out"
     for i in "${!options[@]}"; do
-      say "  [$((i+1))] ${options[$i]}"
+      printf '  [%d] %s\n' "$((i+1))" "${options[$i]}" >"$out"
     done
-    printf 'Enter number: '
-    read -r idx
-    [[ "$idx" =~ ^[0-9]+$ ]] || { say "Invalid number"; continue; }
-    (( idx >= 1 && idx <= ${#options[@]} )) || { say "Out of range"; continue; }
+    printf '\nEnter number: ' >"$out"
+    read -r idx <"$in"
+
+    [[ "$idx" =~ ^[0-9]+$ ]] || { printf 'Invalid number\n' >"$out"; continue; }
+    (( idx >= 1 && idx <= ${#options[@]} )) || { printf 'Out of range\n' >"$out"; continue; }
     echo "$((idx-1))"
     return 0
   done
