@@ -1342,10 +1342,12 @@ main() {
     (( host_idx != guest_idx )) || die "Host GPU and guest GPU cannot be the same."
   fi
 
-  local guest_gpu host_gpu guest_vendor
+  local guest_gpu host_gpu guest_vendor guest_desc host_desc
   guest_gpu="${gpu_bdfs[$guest_idx]}"
   host_gpu="${gpu_bdfs[$host_idx]}"
   guest_vendor="${gpu_vendor_ids[$guest_idx]}"
+  guest_desc="${gpu_descs[$guest_idx]}"
+  host_desc="${gpu_descs[$host_idx]}"
 
   assert_not_equal "$guest_gpu" "$host_gpu" "Host GPU and guest GPU are the same (refusing)."
   assert_pci_bdf_exists "$guest_gpu"
@@ -1354,9 +1356,15 @@ main() {
   # Guest audio selection (default: audio functions in the same PCI slot)
   local guest_audio_csv="${gpu_audio_bdfs_csv[$guest_idx]}"
   if [[ -n "$guest_audio_csv" ]]; then
-    prompt_yn "Passthrough the guest GPU HDMI/DP audio function(s) too?" Y || guest_audio_csv=""
+    say
+    say "Guest GPU selected for passthrough: $guest_gpu"
+    say "  $guest_desc"
+    say "Detected HDMI/DP audio function(s) in the same PCI slot: $guest_audio_csv"
+    say "If you answer 'Y', these audio PCI device(s) will ALSO be bound to vfio-pci and must be added to the VM for HDMI/DP audio output."
+
+    prompt_yn "Also passthrough HDMI/DP AUDIO for this guest GPU?" Y || guest_audio_csv=""
   else
-    say "NOTE: No Audio device found in the same PCI slot as guest GPU."
+    say "NOTE: No HDMI/DP audio device found in the same PCI slot as the selected guest GPU ($guest_gpu)."
   fi
 
   # Preflight: detect if the selected guest GPU looks in-use by the host.
