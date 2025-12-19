@@ -40,9 +40,12 @@ fi
 CSI=$'\033['
 C_RESET="${CSI}0m"
 C_BOLD="${CSI}1m"
+C_DIM="${CSI}2m"
 C_RED="${CSI}31m"
 C_GREEN="${CSI}32m"
+C_YELLOW="${CSI}33m"
 C_BLUE="${CSI}34m"
+C_CYAN="${CSI}36m"
 
 # Track backups for rollback script generation
 declare -A BACKUP_MAP=()
@@ -449,6 +452,45 @@ vendor_label() {
     8086) echo "${C_BOLD}${C_BLUE}${name}${C_RESET}";;  # Intel = blue
     *) echo "${C_BOLD}${name}${C_RESET}";;
   esac
+}
+
+hdr() {
+  # Header line for steps.
+  local title="$1"
+  if (( ENABLE_COLOR )); then
+    say "${C_BOLD}${C_CYAN}==== ${title} ====${C_RESET}"
+  else
+    say "==== ${title} ===="
+  fi
+}
+
+note() {
+  local msg="$1"
+  if (( ENABLE_COLOR )); then
+    say "${C_DIM}${msg}${C_RESET}"
+  else
+    say "$msg"
+  fi
+}
+
+short_gpu_desc() {
+  # Make lspci GPU description shorter for menus.
+  # Keep model info, drop trailing [vvvv:dddd] and (rev ..) when present.
+  local d="$1"
+  d="$(echo "$d" | sed -E 's/^Advanced Micro Devices, Inc\. \[[^]]+\] //; s/^NVIDIA Corporation //; s/^Intel Corporation //')"
+  d="$(echo "$d" | sed -E 's/ \[[0-9a-f]{4}:[0-9a-f]{4}\].*$//; s/ \(rev [^)]+\)$//')"
+  printf '%s' "$(trim "$d")"
+}
+
+short_audio_desc() {
+  local d="$1"
+  if grep -qi 'HDMI|DP' <<<"$d"; then
+    echo "HDMI/DP Audio"
+  elif grep -qi 'HD Audio' <<<"$d"; then
+    echo "HD Audio"
+  else
+    echo "Audio"
+  fi
 }
 
 select_from_list() {
@@ -1294,9 +1336,9 @@ main() {
   preflight_existing_config_gate
 
   say
-  say "VFIO GPU Passthrough Setup (multi-vendor)"
-  say "- Select host GPU, guest GPU"
-  say "- Bind guest GPU (and selected PCI functions) by BDF (safer than vendor:device IDs)"
+  hdr "VFIO GPU Passthrough Setup (multi-vendor)"
+  note "This wizard will ask you to choose: (1) Guest GPU to passthrough, (2) Host audio device to KEEP on the host."
+  note "Anything you choose for the GUEST will be bound to vfio-pci (passthrough). Anything you choose for the HOST stays on host drivers."
   if (( DRY_RUN )); then
     say "- DRY RUN: no files/commands will be applied"
   fi
@@ -1329,11 +1371,19 @@ main() {
   local -a options=()
   local i
   for i in "${!gpu_bdfs[@]}"; do
-    options+=("${gpu_bdfs[$i]}  ::  $(vendor_label "${gpu_vendor_ids[$i]}")  ::  ${gpu_descs[$i]}  (slot audio: ${gpu_audio_bdfs_csv[$i]})")
+    local bdf slot audio_csv vend short
+    bdf="${gpu_bdfs[$i]}"
+    slot="$(pci_slot_of_bdf "$bdf")"
+    audio_csv="${gpu_audio_bdfs_csv[$i]}"
+    vend="$(vendor_label "${gpu_vendor_ids[$i]}")"
+    short="$(short_gpu_desc "${gpu_descs[$i]}")"
+
+    options+=("GPU: $bdf  |  Vendor: ${vend}\n      Model: ${short}\n      PCI slot: ${slot}  |  Slot audio: ${audio_csv:-<none>}")
   done
 
   local guest_idx host_idx
-  guest_idx="$(select_from_list "Select the GPU to PASSTHROUGH (bind to vfio-pci):" "${options[@]}")"
+  hdr "Step 1/4: Select GUEST GPU (will be passed through)"
+  guest_idx="$(select_from_list "Which GPU should be the GUEST (vfio-pci / passthrough)?" "${options[@]}")"
 
   if (( ${#gpu_bdfs[@]} == 2 )); then
     if (( guest_idx == 0 )); then host_idx=1; else host_idx=0; fi
@@ -1349,6 +1399,15 @@ main() {
   guest_desc="${gpu_descs[$guest_idx]}"
   host_desc="${gpu_descs[$host_idx]}"
 
+  say
+  hdr "Selection summary so far"
+  say "Host GPU (stays on host):"
+  say "  $host_gpu"
+  note "  $(short_gpu_desc "$host_desc")"
+  say "Guest GPU (passthrough / vfio-pci):"
+  say "  $guest_gpu"
+  note "  $(short_gpu_desc "$guest_desc")"
+
   assert_not_equal "$guest_gpu" "$host_gpu" "Host GPU and guest GPU are the same (refusing)."
   assert_pci_bdf_exists "$guest_gpu"
   assert_pci_bdf_exists "$host_gpu"
@@ -1357,14 +1416,18 @@ main() {
   local guest_audio_csv="${gpu_audio_bdfs_csv[$guest_idx]}"
   if [[ -n "$guest_audio_csv" ]]; then
     say
-    say "Guest GPU selected for passthrough: $guest_gpu"
-    say "  $guest_desc"
-    say "Detected HDMI/DP audio function(s) in the same PCI slot: $guest_audio_csv"
-    say "If you answer 'Y', these audio PCI device(s) will ALSO be bound to vfio-pci and must be added to the VM for HDMI/DP audio output."
+    hdr "Step 2/4: Guest GPU HDMI/DP Audio (optional)"
+    say "Guest GPU: $guest_gpu"
+    note "$(short_gpu_desc "$guest_desc")"
+    say "Detected HDMI/DP audio PCI function(s) for this GPU: $guest_audio_csv"
+    note "Choose YES if you want HDMI/DP audio output from the VM using the guest GPU."
+    note "Choose NO if you plan to use a different audio device (USB headset, emulated audio, etc.)."
 
-    prompt_yn "Also passthrough HDMI/DP AUDIO for this guest GPU?" Y || guest_audio_csv=""
+    prompt_yn "Also passthrough HDMI/DP AUDIO for the guest GPU?" Y || guest_audio_csv=""
   else
-    say "NOTE: No HDMI/DP audio device found in the same PCI slot as the selected guest GPU ($guest_gpu)."
+    say
+    hdr "Step 2/4: Guest GPU HDMI/DP Audio"
+    note "No HDMI/DP audio device found in the same PCI slot as the selected guest GPU ($guest_gpu)."
   fi
 
   # Preflight: detect if the selected guest GPU looks in-use by the host.
@@ -1377,20 +1440,37 @@ main() {
   local host_audio_bdfs_csv="${gpu_audio_bdfs_csv[$host_idx]}"
 
   say
-  say "Select which AUDIO PCI device(s) must stay on the HOST (NOT vfio)."
-  say "Tip: picking the audio device in the SAME PCI slot as the host GPU is usually correct."
-  say "(This is where you avoid the 1002:ab28 problem: pick by BDF, not by 1002:ab28.)"
+  hdr "Step 3/4: Select HOST audio device (must stay on host)"
+  say "Host GPU is: $host_gpu"
+  note "$(short_gpu_desc "$host_desc")"
+  note "Pick the AUDIO device that should KEEP working on the host (for your desktop sound)."
+  note "Tip: for HDMI sound from the host GPU, pick the audio device in the SAME PCI slot as the host GPU."
+  note "This avoids the common AMD issue where both HDMI audio devices share the same ID (1002:ab28)."
+
+  local host_slot
+  host_slot="$(pci_slot_of_bdf "$host_gpu")"
 
   local -a aud_opts=() aud_bdfs=()
   local abdf adesc avendor adev
   while IFS=$'\t' read -r abdf adesc avendor adev; do
+    local aslot atype vend rec_tag
+    aslot="$(pci_slot_of_bdf "$abdf")"
+    atype="$(short_audio_desc "$adesc")"
+    vend="$(vendor_label "$avendor")"
+
+    rec_tag=""
+    if [[ "$aslot" == "$host_slot" ]]; then
+      rec_tag="${C_BOLD}${C_GREEN}[RECOMMENDED for host GPU]${C_RESET} "
+      (( ! ENABLE_COLOR )) && rec_tag="[RECOMMENDED for host GPU] "
+    fi
+
     aud_bdfs+=("$abdf")
-    aud_opts+=("$abdf  ::  $(vendor_label "$avendor")  ::  $adesc  [$avendor:$adev]")
+    aud_opts+=("${rec_tag}Audio: $abdf  |  Type: ${atype}  |  Vendor: ${vend}\n      PCI slot: ${aslot}  |  IDs: ${avendor}:${adev}\n      lspci: $(short_gpu_desc "$adesc")")
   done < <(audio_devices_discover_all)
 
   if (( ${#aud_bdfs[@]} > 0 )); then
     local host_audio_idx
-    host_audio_idx="$(select_from_list "Select HOST audio PCI device:" "${aud_opts[@]}")"
+    host_audio_idx="$(select_from_list "Which AUDIO device should stay on the HOST?" "${aud_opts[@]}")"
     host_audio_bdfs_csv="${aud_bdfs[$host_audio_idx]}"
     [[ -n "$host_audio_bdfs_csv" ]] && assert_pci_bdf_exists "$host_audio_bdfs_csv"
   else
