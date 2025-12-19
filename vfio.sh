@@ -139,16 +139,24 @@ confirm_phrase() {
   # confirm_phrase "Prompt" "PHRASE"
   local prompt="$1" phrase="$2" ans
 
-  # Prefer /dev/tty so sudo / redirected stdin doesn't break prompts.
-  local in="/dev/stdin" out="/dev/stdout"
-  if [[ -t 0 && -t 1 && -r /dev/tty && -w /dev/tty ]]; then
+  # Always print to stdout, and also to /dev/tty when available.
+  local in="/dev/stdin"
+  local tty=""
+  if [[ -r /dev/tty && -w /dev/tty ]]; then
+    tty="/dev/tty"
     in="/dev/tty"
-    out="/dev/tty"
   fi
 
-  printf '%s\n' "$prompt" >"$out"
-  printf '%s\n' "Type exactly: $phrase" >"$out"
-  printf '> ' >"$out"
+  printf '%s\n' "$prompt"
+  printf '%s\n' "Type exactly: $phrase"
+  if [[ -n "$tty" ]]; then
+    printf '%s\n' "$prompt" >"$tty"
+    printf '%s\n' "Type exactly: $phrase" >"$tty"
+  fi
+
+  printf '> '
+  [[ -n "$tty" ]] && printf '> ' >"$tty"
+
   read -r ans <"$in"
   [[ "$ans" == "$phrase" ]]
 }
@@ -298,23 +306,34 @@ select_from_list() {
   local -a options=("$@")
   local idx
 
-  # Prefer /dev/tty so sudo / redirected stdin doesn't break interactive selection.
-  local in="/dev/stdin" out="/dev/stdout"
-  if [[ -t 0 && -t 1 && -r /dev/tty && -w /dev/tty ]]; then
+  # Always print to stdout, and also to /dev/tty when available.
+  local in="/dev/stdin"
+  local tty=""
+  if [[ -r /dev/tty && -w /dev/tty ]]; then
+    tty="/dev/tty"
     in="/dev/tty"
-    out="/dev/tty"
   fi
 
   while true; do
-    printf '\n%s\n' "$prompt" >"$out"
+    printf '\n%s\n' "$prompt"
     for i in "${!options[@]}"; do
-      printf '  [%d] %s\n' "$((i+1))" "${options[$i]}" >"$out"
+      printf '  [%d] %s\n' "$((i+1))" "${options[$i]}"
     done
-    printf '\nEnter number: ' >"$out"
+
+    if [[ -n "$tty" ]]; then
+      printf '\n%s\n' "$prompt" >"$tty"
+      for i in "${!options[@]}"; do
+        printf '  [%d] %s\n' "$((i+1))" "${options[$i]}" >"$tty"
+      done
+    fi
+
+    printf '\nEnter number: '
+    [[ -n "$tty" ]] && printf '\nEnter number: ' >"$tty"
+
     read -r idx <"$in"
 
-    [[ "$idx" =~ ^[0-9]+$ ]] || { printf 'Invalid number\n' >"$out"; continue; }
-    (( idx >= 1 && idx <= ${#options[@]} )) || { printf 'Out of range\n' >"$out"; continue; }
+    [[ "$idx" =~ ^[0-9]+$ ]] || { printf 'Invalid number\n'; [[ -n "$tty" ]] && printf 'Invalid number\n' >"$tty"; continue; }
+    (( idx >= 1 && idx <= ${#options[@]} )) || { printf 'Out of range\n'; [[ -n "$tty" ]] && printf 'Out of range\n' >"$tty"; continue; }
     echo "$((idx-1))"
     return 0
   done
