@@ -85,11 +85,12 @@ prompt_yn() {
 
 usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME [--debug] [--dry-run] [--verify]
+Usage: $SCRIPT_NAME [--debug] [--dry-run] [--verify] [--detect]
 
   --debug    Enable verbose debug logging (and bash xtrace).
   --dry-run  Show actions but do not write files / run system-changing commands.
   --verify   Do not change anything; validate an existing setup (reads $CONF_FILE).
+  --detect   Print a detailed report of existing VFIO/passthrough configuration and exit.
 EOF
 }
 
@@ -106,6 +107,9 @@ parse_args() {
       --verify)
         MODE="verify"
         ;;
+      --detect)
+        MODE="detect"
+        ;;
       -h|--help)
         usage
         exit 0
@@ -117,8 +121,8 @@ parse_args() {
     shift
   done
 
-  # verify implies dry-run
-  if [[ "$MODE" == "verify" ]]; then
+  # verify/detect implies dry-run
+  if [[ "$MODE" == "verify" || "$MODE" == "detect" ]]; then
     DRY_RUN=1
   fi
 }
@@ -260,6 +264,126 @@ pipewire_sinks_for_pci_bdf() {
       printf '%s\t%s\n' "$sname" "$slabel"
     fi
   done < <(pipewire_sinks_discover)
+}
+
+print_kv() {
+  # print_kv "Key" "Value"
+  printf '  %-28s %s\n' "${1}:" "${2}"
+}
+
+readable_file() {
+  [[ -f "$1" && -r "$1" ]]
+}
+
+detect_existing_vfio_report() {
+  say
+  say "==== Existing VFIO / Passthrough Detection Report ===="
+
+  # Basic host state
+  print_kv "Kernel" "$(uname -r)"
+  print_kv "Current cmdline" "$(cat /proc/cmdline 2>/dev/null || true)"
+  print_kv "Bootloader" "$(detect_bootloader)"
+
+  # Our config
+  if readable_file "$CONF_FILE"; then
+    print_kv "Config" "$CONF_FILE (present)"
+    # shellcheck disable=SC1090
+    . "$CONF_FILE"
+    print_kv "Configured host GPU" "${HOST_GPU_BDF:-<unset>}"
+    print_kv "Configured guest GPU" "${GUEST_GPU_BDF:-<unset>}"
+    print_kv "Configured host audio" "${HOST_AUDIO_BDFS_CSV:-<unset>}"
+    print_kv "Configured guest audio" "${GUEST_AUDIO_BDFS_CSV:-<unset>}"
+  else
+    print_kv "Config" "$CONF_FILE (missing)"
+  fi
+
+  # systemd unit
+  if readable_file "$SYSTEMD_UNIT"; then
+    print_kv "Systemd unit" "$SYSTEMD_UNIT (present)"
+    if command -v systemctl >/dev/null 2>&1; then
+      print_kv "Unit enabled" "$(systemctl is-enabled vfio-bind-selected-gpu.service 2>/dev/null || true)"
+      print_kv "Unit active" "$(systemctl is-active vfio-bind-selected-gpu.service 2>/dev/null || true)"
+      print_kv "Unit status" "$(systemctl show -p ExecStart vfio-bind-selected-gpu.service 2>/dev/null | sed 's/^ExecStart=//' || true)"
+    fi
+  else
+    print_kv "Systemd unit" "$SYSTEMD_UNIT (missing)"
+  fi
+
+  # modules-load
+  if readable_file "$MODULES_LOAD"; then
+    print_kv "Modules-load" "$MODULES_LOAD (present)"
+    print_kv "Modules-load content" "$(tr '\n' ' ' <"$MODULES_LOAD" 2>/dev/null || true)"
+  else
+    print_kv "Modules-load" "$MODULES_LOAD (missing)"
+  fi
+
+  # modprobe configs
+  local hits=""
+  if [[ -d /etc/modprobe.d ]]; then
+    hits="$(grep -RIn --no-messages -E 'vfio-pci|vfio_pci|driver_override|blacklist (amdgpu|nouveau|nvidia|i915|radeon)' /etc/modprobe.d 2>/dev/null | head -n 50 || true)"
+  fi
+  if [[ -n "$hits" ]]; then
+    say
+    say "-- /etc/modprobe.d matches (first 50) --"
+    printf '%s\n' "$hits"
+  else
+    say
+    say "-- /etc/modprobe.d matches --"
+    say "  (none found)"
+  fi
+
+  # initramfs hints
+  say
+  say "-- initramfs tooling detected --"
+  print_kv "update-initramfs" "$(command -v update-initramfs >/dev/null 2>&1 && echo yes || echo no)"
+  print_kv "mkinitcpio" "$(command -v mkinitcpio >/dev/null 2>&1 && echo yes || echo no)"
+  print_kv "dracut" "$(command -v dracut >/dev/null 2>&1 && echo yes || echo no)"
+  if readable_file /etc/initramfs-tools/modules; then
+    print_kv "/etc/initramfs-tools/modules" "present"
+    print_kv "vfio in initramfs-tools/modules" "$(grep -nE '^(vfio|vfio_pci|vfio-iommu-type1|vfio_virqfd)' /etc/initramfs-tools/modules 2>/dev/null | tr '\n' ' ' || true)"
+  fi
+  if [[ -d /etc/dracut.conf.d ]]; then
+    print_kv "/etc/dracut.conf.d" "present"
+    print_kv "vfio in dracut conf" "$(grep -RIn --no-messages -E 'vfio|vfio-pci|add_drivers|force_drivers' /etc/dracut.conf.d 2>/dev/null | head -n 20 | tr '\n' ' ' || true)"
+  fi
+
+  # GRUB defaults
+  if readable_file /etc/default/grub; then
+    say
+    say "-- /etc/default/grub cmdline --"
+    local key
+    key="$(grub_get_key 2>/dev/null || true)"
+    if [[ -n "$key" ]]; then
+      print_kv "$key" "$(grub_read_cmdline "$key" 2>/dev/null || true)"
+    else
+      say "  Could not locate GRUB_CMDLINE_LINUX(_DEFAULT)"
+    fi
+  fi
+
+  # Current device bindings
+  say
+  say "-- Current GPU/Audio bindings (lspci -nnk) --"
+  if command -v lspci >/dev/null 2>&1; then
+    lspci -Dnn | awk '/(VGA compatible controller|3D controller|Display controller|Audio device)/ {print $1}' | while read -r bdf; do
+      [[ -n "$bdf" ]] || continue
+      # Only show AMD/NVIDIA/Intel GPUs + audio
+      if lspci -Dnn -s "$bdf" | grep -Eq 'Advanced Micro Devices|AMD/ATI|NVIDIA|Intel|Audio device'; then
+        printf '%s\n' "$(lspci -Dnnk -s "$bdf" 2>/dev/null | sed 's/^/  /')"
+      fi
+    done
+  fi
+
+  # Libvirt hook detection (common VFIO stage)
+  say
+  say "-- libvirt hook detection --"
+  if [[ -d /etc/libvirt/hooks ]]; then
+    print_kv "/etc/libvirt/hooks" "present"
+    print_kv "hook files" "$(ls -1 /etc/libvirt/hooks 2>/dev/null | tr '\n' ' ' || true)"
+  else
+    print_kv "/etc/libvirt/hooks" "missing"
+  fi
+
+  say "==== End report ===="
 }
 
 require_root() {
@@ -946,6 +1070,8 @@ EOF
 # ---------------- Main ----------------
 
 verify_setup() {
+  detect_existing_vfio_report
+
   [[ -f "$CONF_FILE" ]] || die "Missing $CONF_FILE (nothing to verify)."
   # shellcheck disable=SC1090
   . "$CONF_FILE"
@@ -1131,6 +1257,30 @@ audio_slot_sanity() {
   fi
 }
 
+preflight_existing_config_gate() {
+  # If we detect existing VFIO configuration or active vfio bindings, force an explicit confirmation.
+  local detected=0
+
+  if readable_file "$CONF_FILE" || readable_file "$SYSTEMD_UNIT" || readable_file "$MODULES_LOAD" || readable_file "$BLACKLIST_FILE"; then
+    detected=1
+  fi
+
+  # Also detect if any GPU is currently bound to vfio-pci.
+  if command -v lspci >/dev/null 2>&1; then
+    if lspci -Dnnk | grep -q "Kernel driver in use: vfio-pci"; then
+      detected=1
+    fi
+  fi
+
+  if (( detected )); then
+    detect_existing_vfio_report
+
+    if ! confirm_phrase "Existing VFIO/passthrough configuration detected. Continuing may overwrite configs or cause conflicts." "I UNDERSTAND"; then
+      die "Aborted due to existing VFIO configuration"
+    fi
+  fi
+}
+
 main() {
   parse_args "$@"
 
@@ -1147,8 +1297,16 @@ main() {
     exit $?
   fi
 
+  if [[ "$MODE" == "detect" ]]; then
+    detect_existing_vfio_report
+    exit 0
+  fi
+
   require_root
   require_systemd
+
+  # Early detection of existing passthrough config (before user makes changes).
+  preflight_existing_config_gate
 
   say
   say "VFIO GPU Passthrough Setup (multi-vendor)"
