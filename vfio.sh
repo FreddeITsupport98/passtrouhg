@@ -615,10 +615,10 @@ pipewire_sinks_discover() {
   local id
   for id in "${ids[@]}"; do
     local node_name label
-    node_name="$(wpctl_cmd inspect "$id" 2>/dev/null | awk -F' = ' '/node\.name/{gsub(/\"/,"",$2); print $2; exit}')"
+    node_name="$(wpctl_cmd inspect "$id" 2>/dev/null | awk -F' = ' '/node\.name/{gsub(/"/,"",$2); print $2; exit}')"
     label="$(wpctl_cmd inspect "$id" 2>/dev/null | awk -F' = ' '
-      /node\.description/{gsub(/\"/,"",$2); print $2; exit}
-      /device\.description/{gsub(/\"/,"",$2); print $2; exit}
+      /node\.description/{gsub(/"/,"",$2); print $2; exit}
+      /device\.description/{gsub(/"/,"",$2); print $2; exit}
     ' | head -n1)"
 
     [[ -n "$node_name" ]] || continue
@@ -1039,7 +1039,7 @@ if command -v wpctl >/dev/null 2>&1 && [[ -n "${HOST_AUDIO_NODE_NAME:-}" ]]; the
   )
 
   for id in "${sink_ids[@]}"; do
-    node_name="$(wpctl inspect "$id" 2>/dev/null | awk -F' = ' '/node\.name/{gsub(/\"/,"",$2); print $2; exit}')"
+    node_name="$(wpctl inspect "$id" 2>/dev/null | awk -F' = ' '/node\.name/{gsub(/"/,"",$2); print $2; exit}')"
     if [[ "$node_name" == "$HOST_AUDIO_NODE_NAME" ]]; then
       wpctl set-default "$id" || true
       exit 0
@@ -1545,7 +1545,10 @@ main() {
 
     if (( ${#sink_node_names[@]} > 0 )); then
         local sink_idx
-        sink_idx="$(select_from_list "Select host default sink:" "${sink_opts[@]}")"
+        hdr "Step 4/4: Choose default HOST audio output (PipeWire)"
+        note "This only sets your desktop's default sound output after login."
+        note "It does NOT change what gets passed through to the VM."
+        sink_idx="$(select_from_list "Which host audio OUTPUT should be default?" "${sink_opts[@]}")"
         host_audio_node_name="${sink_node_names[$sink_idx]}"
       else
         note "Could not enumerate PipeWire sinks (common if PipeWire isn't running for that user yet). Skipping."
