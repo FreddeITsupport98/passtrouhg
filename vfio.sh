@@ -1399,6 +1399,7 @@ EOF
 # ---------------- Main ----------------
 
 verify_setup() {
+  hdr "VERIFY VFIO SETUP"
   detect_existing_vfio_report
 
   [[ -f "$CONF_FILE" ]] || die "Missing $CONF_FILE (nothing to verify)."
@@ -1407,9 +1408,20 @@ verify_setup() {
 
   local ok=1
 
-  if [[ -n "${GUEST_GPU_BDF:-}" ]]; then
+  say
+  say "Configured devices from $CONF_FILE:"
+  say "  Guest GPU:   ${GUEST_GPU_BDF:-<missing>}"
+  say "  Guest audio: ${GUEST_AUDIO_BDFS_CSV:-<none>}"
+  say "  Host audio:  ${HOST_AUDIO_BDFS_CSV:-<none>}"
+
+  # Basic sanity
+  if [[ -z "${GUEST_GPU_BDF:-}" ]]; then
+    say "FAIL: GUEST_GPU_BDF is missing in $CONF_FILE"
+    ok=0
+  else
     if [[ "$(bdf_driver_name "$GUEST_GPU_BDF")" != "vfio-pci" ]]; then
       say "FAIL: Guest GPU $GUEST_GPU_BDF is not bound to vfio-pci (driver: $(bdf_driver_name "$GUEST_GPU_BDF"))"
+      note "This is expected BEFORE reboot (or if the vfio bind service isn't enabled)."
       ok=0
     else
       say "OK: Guest GPU $GUEST_GPU_BDF bound to vfio-pci"
@@ -1439,21 +1451,74 @@ verify_setup() {
     fi
   fi
 
-  # GRUB config sanity (if available)
+  # Check that our files/services exist (best-effort)
+  say
+  if [[ -f "$BIND_SCRIPT" ]]; then
+    say "OK: Bind script present: $BIND_SCRIPT"
+  else
+    say "WARN: Bind script missing: $BIND_SCRIPT"
+  fi
+
+  if [[ -f "$SYSTEMD_UNIT" ]]; then
+    say "OK: Systemd unit present: $SYSTEMD_UNIT"
+    if command -v systemctl >/dev/null 2>&1; then
+      local enabled active
+      enabled="$(systemctl is-enabled vfio-bind-selected-gpu.service 2>/dev/null || true)"
+      active="$(systemctl is-active vfio-bind-selected-gpu.service 2>/dev/null || true)"
+      say "INFO: vfio-bind-selected-gpu.service is-enabled: ${enabled:-<unknown>}"
+      say "INFO: vfio-bind-selected-gpu.service is-active:  ${active:-<unknown>}"
+    fi
+  else
+    say "WARN: Systemd unit missing: $SYSTEMD_UNIT"
+  fi
+
+  # IOMMU sanity (best-effort)
+  say
+  if [[ -d /sys/kernel/iommu_groups ]]; then
+    if [[ -n "${GUEST_GPU_BDF:-}" ]]; then
+      local g
+      g="$(iommu_group_of_bdf "$GUEST_GPU_BDF" 2>/dev/null || true)"
+      if [[ -n "$g" ]]; then
+        say "OK: IOMMU group exists for guest GPU ($GUEST_GPU_BDF): group $g"
+      else
+        say "WARN: No IOMMU group found for guest GPU ($GUEST_GPU_BDF). IOMMU may be disabled."
+      fi
+    fi
+  else
+    say "WARN: /sys/kernel/iommu_groups not present. IOMMU may be disabled in BIOS/kernel."
+  fi
+
+  # Kernel cmdline + GRUB sanity (if available)
+  say
+  if [[ -r /proc/cmdline ]]; then
+    local cmd
+    cmd="$(cat /proc/cmdline 2>/dev/null || true)"
+    if grep -qw "iommu=pt" <<<"$cmd"; then
+      say "OK: Running kernel cmdline contains iommu=pt"
+    else
+      say "WARN: Running kernel cmdline does NOT contain iommu=pt"
+    fi
+  fi
+
   if [[ -f /etc/default/grub ]]; then
     local key current
     key="$(grub_get_key 2>/dev/null || true)"
     if [[ -n "$key" ]]; then
       current="$(grub_read_cmdline "$key" 2>/dev/null || true)"
-      if ! grep -qw "iommu=pt" <<<"$current"; then
-        say "WARN: /etc/default/grub missing iommu=pt (did you skip GRUB edit or forget to reboot?)"
+      if grep -qw "iommu=pt" <<<"$current"; then
+        say "OK: /etc/default/grub contains iommu=pt"
+      else
+        say "WARN: /etc/default/grub missing iommu=pt (did you skip GRUB edit?)"
       fi
     fi
   fi
 
+  say
   if (( ok )); then
+    say "RESULT: PASS (guest devices are on vfio-pci; host audio is not)"
     return 0
   fi
+  say "RESULT: FAIL (see messages above)"
   return 1
 }
 
