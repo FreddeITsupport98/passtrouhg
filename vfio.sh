@@ -72,18 +72,28 @@ run() {
 prompt_yn() {
   # prompt_yn "Question" default(Y/N)
   local q="$1"; local def="${2:-Y}"; local ans
+
+  # IMPORTANT: don't rely on stdin/stdout being connected to a TTY (sudo/fish/GUI terminals).
+  # Also avoid printing prompts to stdout (some callers may capture stdout).
+  local in="/dev/stdin"
+  local out="/dev/stderr"
+  if [[ -r /dev/tty && -w /dev/tty ]]; then
+    in="/dev/tty"
+    out="/dev/tty"
+  fi
+
   while true; do
     if [[ "$def" =~ ^[Yy]$ ]]; then
-      printf '%s [Y/n] ' "$q"
+      printf '%s [Y/n] ' "$q" >"$out"
     else
-      printf '%s [y/N] ' "$q"
+      printf '%s [y/N] ' "$q" >"$out"
     fi
-    read -r ans
+    read -r ans <"$in" || return 1
     ans="${ans:-$def}"
     case "$ans" in
       y|Y) return 0;;
       n|N) return 1;;
-      *) say "Please answer y or n.";;
+      *) printf '%s\n' "Please answer y or n." >"$out";;
     esac
   done
 }
@@ -1050,10 +1060,12 @@ detect_bootloader() {
 print_manual_iommu_instructions() {
   local param
   param="$(cpu_iommu_param)"
-  say "Bootloader auto-edit is not supported on this system." 
+  say "Bootloader auto-edit is not supported on this system."
   say "Manually add these kernel parameters, then reboot:"
   say "  $param iommu=pt"
-  say "Optional (risky): pcie_acs_override=downstream,multifunction"
+  say "Advanced (usually NOT recommended): pcie_acs_override=downstream,multifunction"
+  say "  - Only consider this if your IOMMU groups are not isolated."
+  say "  - It can reduce PCIe isolation and may cause instability on some systems."
 }
 
 grub_add_kernel_params() {
@@ -1078,7 +1090,14 @@ grub_add_kernel_params() {
     new="$(add_param_once "$new" "$p")"
   done
 
-  if prompt_yn "Add optional ACS override (pcie_acs_override=downstream,multifunction)?" N; then
+  say
+  hdr "Advanced (optional): ACS override"
+  note "ACS override can sometimes split up IOMMU groups on motherboards that don't expose proper isolation."
+  note "This may help GPU passthrough if your guest GPU shares an IOMMU group with other devices."
+  note "Downsides: weaker PCIe isolation/security and possible instability."
+  note "Recommended: NO unless you know you need it."
+
+  if prompt_yn "Enable ACS override in GRUB (pcie_acs_override=downstream,multifunction)?" N; then
     new="$(add_param_once "$new" "pcie_acs_override=downstream,multifunction")"
   fi
 
@@ -1970,7 +1989,16 @@ main() {
   say "  Host default sink node.name: ${host_audio_node_name:-<not set>}"
   say
 
-  prompt_yn "Proceed and write system config / install services?" N || die "Aborted by user"
+  hdr "Apply changes"
+  note "If you continue, this script will install the core VFIO binding setup:" 
+  note "  - Write $CONF_FILE (your selected PCI BDFs)"
+  note "  - Write $MODULES_LOAD (load vfio modules at boot)"
+  note "  - Write $BIND_SCRIPT (bind ONLY the selected guest BDF(s) to vfio-pci)"
+  note "  - Write + enable $SYSTEMD_UNIT (runs the bind script early at boot)"
+  note "It will then ASK about optional steps (GRUB/IOMMU, ACS override, blacklisting, initramfs, host audio unit)."
+  note "Important: The VFIO binding will fully take effect AFTER a reboot."
+
+  prompt_yn "Apply these changes now?" N || die "Aborted by user"
 
   # Preflight sanity checks before writing anything.
   assert_pci_bdf_exists "$host_gpu"
@@ -1993,7 +2021,14 @@ main() {
   install_bind_script
   install_systemd_unit
 
-  if prompt_yn "Add IOMMU kernel parameters to GRUB (and optionally ACS override)?" Y; then
+  say
+  hdr "Boot configuration (GRUB)"
+  note "IOMMU must be enabled for PCI passthrough to work."
+  note "Recommended: YES (adds amd_iommu=on or intel_iommu=on + iommu=pt)."
+  note "If you answer NO, passthrough may fail unless you already configured IOMMU another way."
+  note "If you answer YES, you will also be offered an optional 'ACS override' (advanced; usually NO)."
+
+  if prompt_yn "Enable IOMMU in GRUB now? (recommended)" Y; then
     grub_add_kernel_params
   else
     # Still show manual instructions if not using GRUB auto-edit.
