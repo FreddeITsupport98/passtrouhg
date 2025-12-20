@@ -90,12 +90,13 @@ prompt_yn() {
 
 usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME [--debug] [--dry-run] [--verify] [--detect]
+Usage: $SCRIPT_NAME [--debug] [--dry-run] [--verify] [--detect] [--self-test]
 
-  --debug    Enable verbose debug logging (and bash xtrace).
-  --dry-run  Show actions but do not write files / run system-changing commands.
-  --verify   Do not change anything; validate an existing setup (reads $CONF_FILE).
-  --detect   Print a detailed report of existing VFIO/passthrough configuration and exit.
+  --debug      Enable verbose debug logging (and bash xtrace).
+  --dry-run    Show actions but do not write files / run system-changing commands.
+  --verify     Do not change anything; validate an existing setup (reads $CONF_FILE).
+  --detect     Print a detailed report of existing VFIO/passthrough configuration and exit.
+  --self-test  Run automated checks for common issues (awk compatibility, PipeWire access) and exit.
 EOF
 }
 
@@ -115,6 +116,9 @@ parse_args() {
       --detect)
         MODE="detect"
         ;;
+      --self-test)
+        MODE="self-test"
+        ;;
       -h|--help)
         usage
         exit 0
@@ -126,8 +130,8 @@ parse_args() {
     shift
   done
 
-  # verify/detect implies dry-run
-  if [[ "$MODE" == "verify" || "$MODE" == "detect" ]]; then
+  # verify/detect/self-test implies dry-run
+  if [[ "$MODE" == "verify" || "$MODE" == "detect" || "$MODE" == "self-test" ]]; then
     DRY_RUN=1
   fi
 }
@@ -288,6 +292,63 @@ print_kv() {
 
 readable_file() {
   [[ -f "$1" && -r "$1" ]]
+}
+
+self_test() {
+  say
+  hdr "Self-test"
+
+  local fail=0
+
+  # Basic interpreter / syntax
+  if bash -n "$0" >/dev/null 2>&1; then
+    print_kv "bash -n" "OK"
+  else
+    print_kv "bash -n" "FAIL"
+    fail=1
+  fi
+
+  # awk compatibility: ensure our state-var awk pattern works (ins=1)
+  if printf 'Sinks:\n  1. foo\nSources:\n' | awk '/Sinks:/{ins=1;next} /Sources:/{ins=0} ins{print}' >/dev/null 2>&1; then
+    print_kv "awk (ins state var)" "OK"
+  else
+    print_kv "awk (ins state var)" "FAIL"
+    fail=1
+  fi
+
+  # /dev/tty availability (menus rely on this under sudo)
+  if [[ -r /dev/tty && -w /dev/tty ]]; then
+    print_kv "/dev/tty" "OK"
+  else
+    print_kv "/dev/tty" "WARN (menus may be invisible under sudo)"
+  fi
+
+  # PipeWire: best-effort
+  if have_cmd wpctl; then
+    if wpctl_cmd status >/dev/null 2>&1; then
+      print_kv "PipeWire/wpctl" "OK"
+    else
+      print_kv "PipeWire/wpctl" "WARN (wpctl cannot connect in current context)"
+    fi
+  else
+    print_kv "PipeWire/wpctl" "SKIP (wpctl not installed)"
+  fi
+
+  # GPU discovery
+  if have_cmd lspci; then
+    local count
+    count="$(gpu_discover_all | wc -l | tr -d ' ')"
+    print_kv "GPU discovery" "Found ${count} GPU(s)"
+  else
+    print_kv "GPU discovery" "SKIP (lspci not installed)"
+  fi
+
+  if (( fail )); then
+    say "Self-test result: FAIL"
+    return 1
+  fi
+  say "Self-test result: OK"
+  return 0
 }
 
 detect_existing_vfio_report() {
@@ -502,7 +563,7 @@ short_gpu_desc() {
 
 short_audio_desc() {
   local d="$1"
-  if grep -qi 'HDMI|DP' <<<"$d"; then
+  if grep -Eqi 'HDMI|DP' <<<"$d"; then
     echo "HDMI/DP Audio"
   elif grep -qi 'HD Audio' <<<"$d"; then
     echo "HD Audio"
@@ -1115,8 +1176,18 @@ WantedBy=default.target
 EOF
 
   chown -R "$user:$user" "$home/.config/systemd"
-  runuser -u "$user" -- systemctl --user daemon-reload || true
-  runuser -u "$user" -- systemctl --user enable vfio-set-host-audio.service || true
+  # Enabling a user unit requires a running user systemd + DBus. If not available, don't spam errors.
+  local uid
+  uid="$(id -u "$user")"
+
+  if command -v runuser >/dev/null 2>&1; then
+    # Try best-effort with XDG_RUNTIME_DIR. If it still fails, we silently skip.
+    runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user daemon-reload >/dev/null 2>&1 || true
+    runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user enable vfio-set-host-audio.service >/dev/null 2>&1 || true
+  fi
+
+  note "User audio unit installed at: $unit_path"
+  note "If it isn't enabled automatically, run after login: systemctl --user enable --now vfio-set-host-audio.service"
 }
 
 # ---------------- Main ----------------
@@ -1356,6 +1427,11 @@ main() {
     exit 0
   fi
 
+  if [[ "$MODE" == "self-test" ]]; then
+    self_test
+    exit $?
+  fi
+
   require_root
   require_systemd
 
@@ -1492,7 +1568,7 @@ main() {
     fi
 
     aud_bdfs+=("$abdf")
-    aud_opts+=("${rec_tag}Audio: $abdf  |  Type: ${atype}  |  Vendor: ${vend}"$'\n'"      PCI slot: ${aslot}  |  IDs: ${avendor}:${adev}"$'\n'"      lspci: $(short_gpu_desc \"$adesc\")")
+    aud_opts+=("${rec_tag}Audio: $abdf  |  Type: ${atype}  |  Vendor: ${vend}"$'\n'"      PCI slot: ${aslot}  |  IDs: ${avendor}:${adev}"$'\n'"      lspci: $(short_gpu_desc "$adesc")")
   done < <(audio_devices_discover_all)
 
   if (( ${#aud_bdfs[@]} > 0 )); then
