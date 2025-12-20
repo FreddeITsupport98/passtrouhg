@@ -1550,8 +1550,9 @@ remove_user_audio_unit() {
   local user="$1"
   [[ -n "$user" ]] || return 0
 
+  # getent exits non-zero if user does not exist; do not abort reset.
   local home
-  home="$(getent passwd "$user" | cut -d: -f6)"
+  home="$(getent passwd "$user" 2>/dev/null | cut -d: -f6 || true)"
   [[ -n "$home" && -d "$home" ]] || return 0
 
   local unit_path="$home/.config/systemd/user/vfio-set-host-audio.service"
@@ -1588,6 +1589,7 @@ reset_vfio_all() {
     for d in /home/*; do
       [[ -d "$d" ]] || continue
       u="$(basename "$d")"
+      # Some /home entries may not correspond to real user accounts; that's OK.
       remove_user_audio_unit "$u"
     done
   fi
