@@ -56,6 +56,8 @@ die() { say "ERROR: $*" >&2; exit 1; }
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"; }
 
+have_cmd() { command -v "$1" >/dev/null 2>&1; }
+
 run() {
   # Print commands in debug mode; honor DRY_RUN.
   if (( DEBUG )); then
@@ -247,17 +249,33 @@ gpu_in_use_preflight() {
   fi
 }
 
+wpctl_cmd() {
+  # Run wpctl as the desktop user if invoked via sudo, so it can connect to the user PipeWire instance.
+  if have_cmd wpctl; then
+    if [[ "${EUID:-$(id -u)}" -eq 0 && -n "${SUDO_USER:-}" ]] && have_cmd runuser; then
+      local uid
+      uid="$(id -u "$SUDO_USER")"
+      # XDG_RUNTIME_DIR is required for PipeWire socket access.
+      runuser -u "$SUDO_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid" wpctl "$@"
+      return $?
+    fi
+    wpctl "$@"
+    return $?
+  fi
+  return 127
+}
+
 pipewire_sinks_for_pci_bdf() {
   # Emits TSV: NODE_NAME \t LABEL for sinks that match the PCI tag of this BDF.
   local bdf="$1"
-  command -v wpctl >/dev/null 2>&1 || return 1
+  have_cmd wpctl || return 1
 
   local pci_tag
   pci_tag="$(echo "$bdf" | sed -E 's/^0000:/pci-0000_/; s/:/_/g')"
 
   local sid sname slabel
   while IFS=$'\t' read -r sid sname slabel; do
-    if wpctl inspect "$sid" 2>/dev/null | grep -Fq "$pci_tag"; then
+    if wpctl_cmd inspect "$sid" 2>/dev/null | grep -Fq "$pci_tag"; then
       printf '%s\t%s\n' "$sname" "$slabel"
     fi
   done < <(pipewire_sinks_discover)
@@ -572,14 +590,19 @@ audio_devices_discover_all() {
 pipewire_sinks_discover() {
   # Emits TSV: SINK_ID \t NODE_NAME \t LABEL
   # Uses wpctl status + wpctl inspect.
-  command -v wpctl >/dev/null 2>&1 || return 1
+  have_cmd wpctl || return 1
+
+  # Silence PipeWire connection noise and handle "wpctl can't connect" gracefully.
+  local status
+  status="$(wpctl_cmd status 2>/dev/null || true)"
+  [[ -n "$status" ]] || return 1
 
   local -a ids=()
   mapfile -t ids < <(
-    wpctl status | awk '
-      /Sinks:/{in=1;next}
-      /Sources:/{in=0}
-      in{
+    printf '%s\n' "$status" | awk '
+      /Sinks:/{ins=1;next}
+      /Sources:/{ins=0}
+      ins{
         for(i=1;i<=NF;i++){
           if($i ~ /^[0-9]+\.$/){ gsub("\\.","",$i); print $i; break }
         }
@@ -590,8 +613,8 @@ pipewire_sinks_discover() {
   local id
   for id in "${ids[@]}"; do
     local node_name label
-    node_name="$(wpctl inspect "$id" 2>/dev/null | awk -F' = ' '/node\.name/{gsub(/\"/,"",$2); print $2; exit}')"
-    label="$(wpctl inspect "$id" 2>/dev/null | awk -F' = ' '
+    node_name="$(wpctl_cmd inspect "$id" 2>/dev/null | awk -F' = ' '/node\.name/{gsub(/\"/,"",$2); print $2; exit}')"
+    label="$(wpctl_cmd inspect "$id" 2>/dev/null | awk -F' = ' '
       /node\.description/{gsub(/\"/,"",$2); print $2; exit}
       /device\.description/{gsub(/\"/,"",$2); print $2; exit}
     ' | head -n1)"
@@ -1003,9 +1026,9 @@ CONF_FILE="/etc/vfio-gpu-passthrough.conf"
 if command -v wpctl >/dev/null 2>&1 && [[ -n "${HOST_AUDIO_NODE_NAME:-}" ]]; then
   mapfile -t sink_ids < <(
     wpctl status | awk '
-      /Sinks:/{in=1;next}
-      /Sources:/{in=0}
-      in{
+      /Sinks:/{ins=1;next}
+      /Sources:/{ins=0}
+      ins{
         for(i=1;i<=NF;i++){
           if($i ~ /^[0-9]+\.$/){ gsub("\\.","",$i); print $i; break }
         }
@@ -1031,9 +1054,9 @@ if command -v wpctl >/dev/null 2>&1 && [[ -n "${HOST_AUDIO_BDFS_CSV:-}" ]]; then
 
     mapfile -t sink_ids < <(
       wpctl status | awk '
-        /Sinks:/{in=1;next}
-        /Sources:/{in=0}
-        in{
+        /Sinks:/{ins=1;next}
+        /Sources:/{ins=0}
+        ins{
           for(i=1;i<=NF;i++){
             if($i ~ /^[0-9]+\.$/){ gsub("\\.","",$i); print $i; break }
           }
@@ -1318,6 +1341,8 @@ main() {
   need_cmd grep
   need_cmd install
   need_cmd mktemp
+  # Optional but improves UX for PipeWire enumeration under sudo
+  have_cmd runuser || true
 
   if [[ "$MODE" == "verify" ]]; then
     verify_setup
@@ -1490,6 +1515,7 @@ main() {
   local host_audio_node_name=""
   if command -v wpctl >/dev/null 2>&1; then
     if prompt_yn "Do you want to select the DEFAULT AUDIO SINK for the host user session (PipeWire/WirePlumber)?" Y; then
+      note "(Tip: this sets the default sink name for the user session; it does NOT affect VFIO binding.)"
       local -a sink_opts=() sink_node_names=()
 
       # Prefer sinks that match the selected host audio BDF (if available).
@@ -1515,12 +1541,12 @@ main() {
         sink_opts+=("$sname  ::  $slabel")
       done < <(pipewire_sinks_discover || true)
 
-      if (( ${#sink_node_names[@]} > 0 )); then
+    if (( ${#sink_node_names[@]} > 0 )); then
         local sink_idx
         sink_idx="$(select_from_list "Select host default sink:" "${sink_opts[@]}")"
         host_audio_node_name="${sink_node_names[$sink_idx]}"
       else
-        say "NOTE: Could not enumerate PipeWire sinks; skipping."
+        note "Could not enumerate PipeWire sinks (common if PipeWire isn't running for that user yet). Skipping."
       fi
     fi
   fi
