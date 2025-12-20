@@ -1920,11 +1920,16 @@ main() {
       note "(Tip: this sets the default sink name for the user session; it does NOT affect VFIO binding.)"
       local -a sink_opts=() sink_node_names=()
 
-      # Prefer sinks that match the selected host audio BDF (if available).
+      # Prefer sinks that match the selected host audio PCI device.
       if [[ -n "$host_audio_bdfs_csv" ]]; then
+        note "Recommended: pick the sink that uses the HOST audio PCI device ($host_audio_bdfs_csv)."
         while IFS=$'\t' read -r sname slabel; do
           sink_node_names+=("$sname")
-          sink_opts+=("$sname  ::  $slabel  (matches host PCI audio $host_audio_bdfs_csv)")
+          if (( ENABLE_COLOR )); then
+            sink_opts+=("${C_BOLD}${C_GREEN}[RECOMMENDED: host audio]${C_RESET} $sname  ::  $slabel")
+          else
+            sink_opts+=("[RECOMMENDED: host audio] $sname  ::  $slabel")
+          fi
         done < <(pipewire_sinks_for_pci_bdf "$host_audio_bdfs_csv" 2>/dev/null || true)
       fi
 
