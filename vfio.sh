@@ -1669,42 +1669,29 @@ preflight_existing_config_gate() {
     hc="$(vfio_config_health)"
     status="$(printf '%s\n' "$hc" | awk -F= '/^STATUS=/{print $2; exit}')"
 
-    local prompt
+    # UX goal: offer RESET first, but default should be "No" so user can keep going.
+    say
     if [[ "$status" == "BAD" ]]; then
-      prompt="BAD VFIO configuration detected. Reset is recommended. What do you want to do?"
-    else
-      prompt="Existing passthrough config detected. What do you want to do?"
-    fi
-
-    local choice
-    choice="$(select_from_list "$prompt" \
-      "Continue (keep existing settings; may overwrite/adjust)" \
-      "RESET (remove VFIO settings installed by this script)" \
-      "Exit")"
-
-    case "$choice" in
-      0)
-        if [[ "$status" == "BAD" ]]; then
-          if ! confirm_phrase "Continuing with a BAD config can break boot, graphics, or audio." "I UNDERSTAND"; then
-            die "Aborted"
-          fi
-        else
-          if ! confirm_phrase "Continuing may overwrite configs or cause conflicts." "I UNDERSTAND"; then
-            die "Aborted"
-          fi
-        fi
-        ;;
-      1)
+      hdr "WARNING"
+      note "A BAD VFIO configuration was detected. Reset is recommended."
+      if prompt_yn "Reset / cleanup VFIO settings now?" N; then
         reset_vfio_all
         exit 0
-        ;;
-      2)
+      fi
+
+      # If user refuses reset, require explicit acknowledgement.
+      if ! confirm_phrase "Continuing with a BAD config can break boot, graphics, or audio." "I UNDERSTAND"; then
         die "Aborted"
-        ;;
-      *)
-        die "Invalid selection"
-        ;;
-    esac
+      fi
+    else
+      # OK/WARN: offer reset, default no, then proceed.
+      if prompt_yn "Existing VFIO config detected. Do you want to RESET it before continuing?" N; then
+        reset_vfio_all
+        exit 0
+      fi
+      # Default is to continue to next step with no extra prompts.
+      note "Continuing with existing config. (You can run: sudo bash vfio.sh --reset)"
+    fi
   fi
 }
 
