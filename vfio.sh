@@ -527,7 +527,9 @@ select_from_list() {
   while true; do
     printf '\n%s\n' "$prompt" >"$out"
     for i in "${!options[@]}"; do
-      printf '  [%d] %s\n' "$((i+1))" "${options[$i]}" >"$out"
+      printf '  [%d] ' "$((i+1))" >"$out"
+      # %b expands backslash escapes in the argument (useful if an option contains \n).
+      printf '%b\n' "${options[$i]}" >"$out"
     done
     printf '\nEnter number: ' >"$out"
 
@@ -1403,7 +1405,7 @@ main() {
     vend="$(vendor_label "${gpu_vendor_ids[$i]}")"
     short="$(short_gpu_desc "${gpu_descs[$i]}")"
 
-    options+=("GPU: $bdf  |  Vendor: ${vend}\n      Model: ${short}\n      PCI slot: ${slot}  |  Slot audio: ${audio_csv:-<none>}")
+    options+=("GPU: $bdf  |  Vendor: ${vend}"$'\n'"      Model: ${short}"$'\n'"      PCI slot: ${slot}  |  Slot audio: ${audio_csv:-<none>}")
   done
 
   local guest_idx host_idx
@@ -1490,7 +1492,7 @@ main() {
     fi
 
     aud_bdfs+=("$abdf")
-    aud_opts+=("${rec_tag}Audio: $abdf  |  Type: ${atype}  |  Vendor: ${vend}\n      PCI slot: ${aslot}  |  IDs: ${avendor}:${adev}\n      lspci: $(short_gpu_desc "$adesc")")
+    aud_opts+=("${rec_tag}Audio: $abdf  |  Type: ${atype}  |  Vendor: ${vend}"$'\n'"      PCI slot: ${aslot}  |  IDs: ${avendor}:${adev}"$'\n'"      lspci: $(short_gpu_desc \"$adesc\")")
   done < <(audio_devices_discover_all)
 
   if (( ${#aud_bdfs[@]} > 0 )); then
