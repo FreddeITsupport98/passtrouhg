@@ -319,6 +319,22 @@ is_service_active() {
   systemctl is-active "$unit" >/dev/null 2>&1
 }
 
+grub_cmdline_value() {
+  # Returns the configured grub cmdline (GRUB_CMDLINE_LINUX_DEFAULT or GRUB_CMDLINE_LINUX)
+  [[ -f /etc/default/grub ]] || return 1
+  local key
+  key="$(grub_get_key 2>/dev/null || true)"
+  [[ -n "$key" ]] || return 1
+  grub_read_cmdline "$key" 2>/dev/null
+}
+
+grub_has_vfio_params() {
+  local cmd
+  cmd="$(grub_cmdline_value 2>/dev/null || true)"
+  [[ -n "$cmd" ]] || return 1
+  grep -Eq '(^|[[:space:]])(amd_iommu=on|intel_iommu=on|iommu=pt|pcie_acs_override=downstream,multifunction)([[:space:]]|$)' <<<"$cmd"
+}
+
 vfio_config_health() {
   # Prints:
   #   STATUS=OK|BAD|WARN
@@ -338,7 +354,7 @@ vfio_config_health() {
     fi
   }
 
-  # If nothing is present, it's OK.
+  # If nothing is present, it's OK (unless GRUB still has VFIO/IOMMU params).
   local any=0
   readable_file "$CONF_FILE" && any=1
   readable_file "$SYSTEMD_UNIT" && any=1
@@ -346,6 +362,11 @@ vfio_config_health() {
   readable_file "$BLACKLIST_FILE" && any=1
 
   if (( ! any )); then
+    if grub_has_vfio_params; then
+      add_reason WARN "GRUB cmdline still contains VFIO/IOMMU params (amd_iommu/intel_iommu, iommu=pt, ACS override). Consider reset to remove."
+      printf 'STATUS=%s\n' "$status"
+      return 0
+    fi
     printf 'STATUS=OK\n'
     return 0
   fi
@@ -1649,10 +1670,15 @@ reset_vfio_all() {
 }
 
 preflight_existing_config_gate() {
-  # If we detect existing VFIO configuration or active vfio bindings, offer reset.
+  # If we detect existing VFIO configuration, leftover kernel params, or active vfio bindings, offer reset.
   local detected=0
 
   if readable_file "$CONF_FILE" || readable_file "$SYSTEMD_UNIT" || readable_file "$MODULES_LOAD" || readable_file "$BLACKLIST_FILE"; then
+    detected=1
+  fi
+
+  # Leftover kernel parameters are also "existing config".
+  if grub_has_vfio_params; then
     detected=1
   fi
 
