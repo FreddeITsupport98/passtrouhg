@@ -90,13 +90,14 @@ prompt_yn() {
 
 usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME [--debug] [--dry-run] [--verify] [--detect] [--self-test]
+Usage: $SCRIPT_NAME [--debug] [--dry-run] [--verify] [--detect] [--self-test] [--reset]
 
   --debug      Enable verbose debug logging (and bash xtrace).
   --dry-run    Show actions but do not write files / run system-changing commands.
   --verify     Do not change anything; validate an existing setup (reads $CONF_FILE).
   --detect     Print a detailed report of existing VFIO/passthrough configuration and exit.
   --self-test  Run automated checks for common issues (awk compatibility, PipeWire access) and exit.
+  --reset      Reset/remove VFIO passthrough settings installed by this script (systemd/modprobe/grub/initramfs/user units).
 EOF
 }
 
@@ -118,6 +119,9 @@ parse_args() {
         ;;
       --self-test)
         MODE="self-test"
+        ;;
+      --reset)
+        MODE="reset"
         ;;
       -h|--help)
         usage
@@ -294,7 +298,145 @@ readable_file() {
   [[ -f "$1" && -r "$1" ]]
 }
 
-self_test() {
+csv_each() {
+  # csv_each "a,b,c" -> prints one per line
+  local csv="${1:-}"
+  local IFS=','
+  local -a arr=()
+  read -r -a arr <<<"$csv"
+  printf '%s\n' "${arr[@]}"
+}
+
+is_service_enabled() {
+  local unit="$1"
+  command -v systemctl >/dev/null 2>&1 || return 1
+  systemctl is-enabled "$unit" >/dev/null 2>&1
+}
+
+is_service_active() {
+  local unit="$1"
+  command -v systemctl >/dev/null 2>&1 || return 1
+  systemctl is-active "$unit" >/dev/null 2>&1
+}
+
+vfio_config_health() {
+  # Prints:
+  #   STATUS=OK|BAD|WARN
+  #   REASON=... (0+)
+  #
+  # BAD means "very likely broken / dangerous" and should prompt reset.
+  local status="OK"
+
+  add_reason() {
+    local sev="$1" msg="$2"
+    printf 'REASON_SEV=%s\n' "$sev"
+    printf 'REASON=%s\n' "$msg"
+    if [[ "$sev" == "BAD" ]]; then
+      status="BAD"
+    elif [[ "$sev" == "WARN" && "$status" != "BAD" ]]; then
+      status="WARN"
+    fi
+  }
+
+  # If nothing is present, it's OK.
+  local any=0
+  readable_file "$CONF_FILE" && any=1
+  readable_file "$SYSTEMD_UNIT" && any=1
+  readable_file "$MODULES_LOAD" && any=1
+  readable_file "$BLACKLIST_FILE" && any=1
+
+  if (( ! any )); then
+    printf 'STATUS=OK\n'
+    return 0
+  fi
+
+  # systemd service sanity
+  if is_service_enabled vfio-bind-selected-gpu.service; then
+    if [[ ! -f "$BIND_SCRIPT" ]]; then
+      add_reason BAD "vfio-bind-selected-gpu.service is enabled but $BIND_SCRIPT is missing"
+    fi
+    if [[ ! -f "$CONF_FILE" ]]; then
+      add_reason BAD "vfio-bind-selected-gpu.service is enabled but $CONF_FILE is missing"
+    fi
+  fi
+
+  # Config sanity
+  if readable_file "$CONF_FILE"; then
+    # shellcheck disable=SC1090
+    . "$CONF_FILE"
+
+    if [[ -z "${HOST_GPU_BDF:-}" || -z "${GUEST_GPU_BDF:-}" ]]; then
+      add_reason BAD "$CONF_FILE exists but HOST_GPU_BDF or GUEST_GPU_BDF is empty"
+    fi
+
+    if [[ -n "${HOST_GPU_BDF:-}" && -n "${GUEST_GPU_BDF:-}" && "$HOST_GPU_BDF" == "$GUEST_GPU_BDF" ]]; then
+      add_reason BAD "HOST_GPU_BDF equals GUEST_GPU_BDF ($HOST_GPU_BDF)"
+    fi
+
+    if [[ -n "${HOST_GPU_BDF:-}" && ! -d "/sys/bus/pci/devices/$HOST_GPU_BDF" ]]; then
+      add_reason BAD "Configured HOST_GPU_BDF not present in sysfs: $HOST_GPU_BDF"
+    fi
+    if [[ -n "${GUEST_GPU_BDF:-}" && ! -d "/sys/bus/pci/devices/$GUEST_GPU_BDF" ]]; then
+      add_reason BAD "Configured GUEST_GPU_BDF not present in sysfs: $GUEST_GPU_BDF"
+    fi
+
+    if [[ -n "${HOST_AUDIO_BDFS_CSV:-}" ]]; then
+      local d
+      while IFS= read -r d; do
+        [[ -n "$d" ]] || continue
+        if [[ ! -d "/sys/bus/pci/devices/$d" ]]; then
+          add_reason BAD "Configured HOST_AUDIO_BDFS_CSV device not present in sysfs: $d"
+        fi
+      done < <(csv_each "$HOST_AUDIO_BDFS_CSV")
+    fi
+
+    if [[ -n "${GUEST_AUDIO_BDFS_CSV:-}" ]]; then
+      local d
+      while IFS= read -r d; do
+        [[ -n "$d" ]] || continue
+        if [[ ! -d "/sys/bus/pci/devices/$d" ]]; then
+          add_reason BAD "Configured GUEST_AUDIO_BDFS_CSV device not present in sysfs: $d"
+        fi
+      done < <(csv_each "$GUEST_AUDIO_BDFS_CSV")
+    fi
+
+    # Host/guest audio overlap check
+    if [[ -n "${HOST_AUDIO_BDFS_CSV:-}" && -n "${GUEST_AUDIO_BDFS_CSV:-}" ]]; then
+      local h g
+      while IFS= read -r h; do
+        [[ -n "$h" ]] || continue
+        while IFS= read -r g; do
+          [[ -n "$g" ]] || continue
+          if [[ "$h" == "$g" ]]; then
+            add_reason BAD "Host audio and guest audio overlap (same PCI device selected): $h"
+          fi
+        done < <(csv_each "$GUEST_AUDIO_BDFS_CSV")
+      done < <(csv_each "$HOST_AUDIO_BDFS_CSV")
+    fi
+
+    # Runtime binding mismatch hints
+    if [[ -n "${GUEST_GPU_BDF:-}" ]]; then
+      if [[ "$(bdf_driver_name "$GUEST_GPU_BDF")" != "vfio-pci" ]] && is_service_enabled vfio-bind-selected-gpu.service; then
+        add_reason WARN "Service is enabled but guest GPU is not currently bound to vfio-pci (likely needs reboot): $GUEST_GPU_BDF"
+      fi
+    fi
+    if [[ -n "${HOST_AUDIO_BDFS_CSV:-}" ]]; then
+      local ha="${HOST_AUDIO_BDFS_CSV%%,*}"
+      if [[ "$(bdf_driver_name "$ha")" == "vfio-pci" ]]; then
+        add_reason BAD "Host audio is currently bound to vfio-pci (host sound will break): $ha"
+      fi
+    fi
+  else
+    # If we see other installed artifacts but no config, treat as bad.
+    if readable_file "$SYSTEMD_UNIT" || readable_file "$MODULES_LOAD" || readable_file "$BLACKLIST_FILE"; then
+      add_reason BAD "VFIO files exist but $CONF_FILE is missing (partial install)"
+    fi
+  fi
+
+  printf 'STATUS=%s\n' "$status"
+}
+
+detect_existing_vfio_report() {
   say
   hdr "Self-test"
 
@@ -359,6 +501,16 @@ detect_existing_vfio_report() {
   print_kv "Kernel" "$(uname -r)"
   print_kv "Current cmdline" "$(cat /proc/cmdline 2>/dev/null || true)"
   print_kv "Bootloader" "$(detect_bootloader)"
+
+  # Health check
+  say
+  say "-- Health check --"
+  local hc
+  hc="$(vfio_config_health)"
+  local status
+  status="$(printf '%s\n' "$hc" | awk -F= '/^STATUS=/{print $2; exit}')"
+  print_kv "Health" "${status:-UNKNOWN}"
+  printf '%s\n' "$hc" | awk -F= '/^REASON=/{print "  - " $2}'
 
   # Our config
   if readable_file "$CONF_FILE"; then
@@ -842,6 +994,20 @@ add_param_once() {
   else
     echo "$(trim "$cmdline $param")"
   fi
+}
+
+remove_param_all() {
+  # Remove a cmdline token (exact token) if present.
+  local cmdline="$1" param="$2"
+  # Split on spaces to be safe.
+  local out="" tok
+  for tok in $cmdline; do
+    if [[ "$tok" == "$param" ]]; then
+      continue
+    fi
+    out+="${out:+ }$tok"
+  done
+  echo "$(trim "$out")"
 }
 
 detect_bootloader() {
@@ -1380,15 +1546,114 @@ audio_slot_sanity() {
   fi
 }
 
+remove_user_audio_unit() {
+  local user="$1"
+  [[ -n "$user" ]] || return 0
+
+  local home
+  home="$(getent passwd "$user" | cut -d: -f6)"
+  [[ -n "$home" && -d "$home" ]] || return 0
+
+  local unit_path="$home/.config/systemd/user/vfio-set-host-audio.service"
+  if [[ -f "$unit_path" ]]; then
+    run rm -f "$unit_path"
+  fi
+}
+
+reset_vfio_all() {
+  hdr "RESET / CLEANUP"
+  note "This will remove VFIO passthrough settings installed by this script."
+  note "It will NOT uninstall libvirt/QEMU, and it will NOT change your VM XMLs."
+
+  if ! confirm_phrase "To continue, confirm reset." "RESET VFIO"; then
+    die "Reset cancelled"
+  fi
+
+  # Disable system service (best-effort)
+  if command -v systemctl >/dev/null 2>&1; then
+    run systemctl disable --now vfio-bind-selected-gpu.service 2>/dev/null || true
+    run systemctl daemon-reload 2>/dev/null || true
+  fi
+
+  # Remove managed files
+  run rm -f "$SYSTEMD_UNIT" "$BIND_SCRIPT" "$AUDIO_SCRIPT" "$CONF_FILE" "$MODULES_LOAD" "$BLACKLIST_FILE" 2>/dev/null || true
+
+  # Remove user unit for SUDO_USER (and optionally all /home users)
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    remove_user_audio_unit "$SUDO_USER"
+  fi
+
+  if prompt_yn "Also remove vfio-set-host-audio.service for ALL users under /home/* ?" N; then
+    local d u
+    for d in /home/*; do
+      [[ -d "$d" ]] || continue
+      u="$(basename "$d")"
+      remove_user_audio_unit "$u"
+    done
+  fi
+
+  local grub_changed=0
+
+  # Remove GRUB kernel parameters added by this script
+  if [[ -f /etc/default/grub ]]; then
+    if prompt_yn "Also remove IOMMU/VFIO kernel params from /etc/default/grub (amd_iommu/intel_iommu, iommu=pt, pcie_acs_override)?" Y; then
+      backup_file /etc/default/grub
+
+      local key current new
+      key="$(grub_get_key)" || die "Could not find GRUB_CMDLINE_LINUX(_DEFAULT) in /etc/default/grub"
+      current="$(grub_read_cmdline "$key")"
+      new="$current"
+
+      new="$(remove_param_all "$new" "amd_iommu=on")"
+      new="$(remove_param_all "$new" "intel_iommu=on")"
+      new="$(remove_param_all "$new" "iommu=pt")"
+      new="$(remove_param_all "$new" "pcie_acs_override=downstream,multifunction")"
+
+      if [[ "$(trim "$new")" != "$(trim "$current")" ]]; then
+        grub_write_cmdline_in_place "$key" "$new"
+        grub_changed=1
+      else
+        note "No matching VFIO/IOMMU params found in GRUB cmdline; leaving it unchanged."
+      fi
+    fi
+  fi
+
+  # Always regenerate GRUB config if we changed /etc/default/grub.
+  if (( grub_changed )); then
+    if command -v update-grub >/dev/null 2>&1; then
+      say "Updating GRUB config via update-grub..."
+      run update-grub
+    elif command -v grub-mkconfig >/dev/null 2>&1; then
+      local out
+      if [[ -d /boot/grub ]]; then
+        out=/boot/grub/grub.cfg
+      elif [[ -d /boot/grub2 ]]; then
+        out=/boot/grub2/grub.cfg
+      else
+        out=""
+      fi
+      [[ -n "$out" ]] && run grub-mkconfig -o "$out" || true
+    fi
+  fi
+
+  # Always rebuild initramfs at end of reset (so removed blacklists/modules are fully gone on next boot).
+  say
+  say "Rebuilding initramfs (recommended after reset)..."
+  maybe_update_initramfs
+
+  say
+  say "Reset complete. Reboot recommended."
+  note "If any devices are currently bound to vfio-pci, a reboot is the cleanest way to restore host drivers."
+}
+
 preflight_existing_config_gate() {
-  # If we detect existing VFIO configuration or active vfio bindings, force an explicit confirmation.
+  # If we detect existing VFIO configuration or active vfio bindings, offer reset.
   local detected=0
 
   if readable_file "$CONF_FILE" || readable_file "$SYSTEMD_UNIT" || readable_file "$MODULES_LOAD" || readable_file "$BLACKLIST_FILE"; then
     detected=1
   fi
 
-  # Also detect if any GPU is currently bound to vfio-pci.
   if command -v lspci >/dev/null 2>&1; then
     if lspci -Dnnk | grep -q "Kernel driver in use: vfio-pci"; then
       detected=1
@@ -1398,9 +1663,46 @@ preflight_existing_config_gate() {
   if (( detected )); then
     detect_existing_vfio_report
 
-    if ! confirm_phrase "Existing VFIO/passthrough configuration detected. Continuing may overwrite configs or cause conflicts." "I UNDERSTAND"; then
-      die "Aborted due to existing VFIO configuration"
+    local hc status
+    hc="$(vfio_config_health)"
+    status="$(printf '%s\n' "$hc" | awk -F= '/^STATUS=/{print $2; exit}')"
+
+    local prompt
+    if [[ "$status" == "BAD" ]]; then
+      prompt="BAD VFIO configuration detected. Reset is recommended. What do you want to do?"
+    else
+      prompt="Existing passthrough config detected. What do you want to do?"
     fi
+
+    local choice
+    choice="$(select_from_list "$prompt" \
+      "Continue (keep existing settings; may overwrite/adjust)" \
+      "RESET (remove VFIO settings installed by this script)" \
+      "Exit")"
+
+    case "$choice" in
+      0)
+        if [[ "$status" == "BAD" ]]; then
+          if ! confirm_phrase "Continuing with a BAD config can break boot, graphics, or audio." "I UNDERSTAND"; then
+            die "Aborted"
+          fi
+        else
+          if ! confirm_phrase "Continuing may overwrite configs or cause conflicts." "I UNDERSTAND"; then
+            die "Aborted"
+          fi
+        fi
+        ;;
+      1)
+        reset_vfio_all
+        exit 0
+        ;;
+      2)
+        die "Aborted"
+        ;;
+      *)
+        die "Invalid selection"
+        ;;
+    esac
   fi
 }
 
@@ -1430,6 +1732,13 @@ main() {
   if [[ "$MODE" == "self-test" ]]; then
     self_test
     exit $?
+  fi
+
+  if [[ "$MODE" == "reset" ]]; then
+    require_root
+    require_systemd
+    reset_vfio_all
+    exit 0
   fi
 
   require_root
