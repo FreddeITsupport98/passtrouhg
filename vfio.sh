@@ -467,7 +467,7 @@ vfio_config_health() {
   printf 'STATUS=%s\n' "$status"
 }
 
-detect_existing_vfio_report() {
+self_test() {
   say
   hdr "Self-test"
 
@@ -655,7 +655,11 @@ require_root() {
 }
 
 require_systemd() {
-  [[ -d /run/systemd/system ]] || die "systemd not detected (/run/systemd/system missing)."
+  if [[ ! -d /run/systemd/system ]]; then
+    say "This helper only supports systems running systemd as PID 1."
+    say "Other init systems (for example OpenRC, runit, sysvinit, s6, etc.) are NOT supported."
+    die "systemd not detected (/run/systemd/system missing)."
+  fi
   need_cmd systemctl
 }
 
@@ -1058,10 +1062,15 @@ detect_bootloader() {
 }
 
 print_manual_iommu_instructions() {
-  local param
+  local param bl
   param="$(cpu_iommu_param)"
-  say "Bootloader auto-edit is not supported on this system."
-  say "Manually add these kernel parameters, then reboot:"
+  bl="$(detect_bootloader)"
+  if [[ "$bl" != "grub" ]]; then
+    say "Detected boot loader: $bl"
+  fi
+  say "Automatic kernel parameter editing is ONLY implemented for GRUB on systemd-based systems."
+  say "Other boot loaders (for example rEFInd, systemd-boot, custom UEFI stubs, etc.) are NOT supported by this script."
+  say "If you use one of those, you must edit your kernel parameters manually. Add these parameters and then reboot:"
   say "  $param iommu=pt"
   say "Advanced (usually NOT recommended): pcie_acs_override=downstream,multifunction"
   say "  - Only consider this if your IOMMU groups are not isolated."
