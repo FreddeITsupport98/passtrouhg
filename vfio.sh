@@ -1122,8 +1122,19 @@ grub_add_kernel_params() {
     fi
     say "Updating GRUB config via grub-mkconfig -o $out ..."
     run grub-mkconfig -o "$out"
+  elif command -v grub2-mkconfig >/dev/null 2>&1; then
+    local out
+    if [[ -d /boot/grub2 ]]; then
+      out=/boot/grub2/grub.cfg
+    elif [[ -d /boot/grub ]]; then
+      out=/boot/grub/grub.cfg
+    else
+      die "Could not determine grub.cfg output path (no /boot/grub2 or /boot/grub)"
+    fi
+    say "Updating GRUB config via grub2-mkconfig -o $out ..."
+    run grub2-mkconfig -o "$out"
   else
-    die "Neither update-grub nor grub-mkconfig found"
+    die "No supported GRUB update command found (tried update-grub, grub-mkconfig, grub2-mkconfig)"
   fi
 }
 
@@ -1576,6 +1587,12 @@ elif command -v grub-mkconfig >/dev/null 2>&1; then
   elif [ -d /boot/grub2 ]; then
     grub-mkconfig -o /boot/grub2/grub.cfg || true
   fi
+elif command -v grub2-mkconfig >/dev/null 2>&1; then
+  if [ -d /boot/grub2 ]; then
+    grub2-mkconfig -o /boot/grub2/grub.cfg || true
+  elif [ -d /boot/grub ]; then
+    grub2-mkconfig -o /boot/grub/grub.cfg || true
+  fi
 fi
 
 # Rebuild initramfs (best-effort)
@@ -1740,6 +1757,16 @@ reset_vfio_all() {
         out=""
       fi
       [[ -n "$out" ]] && run grub-mkconfig -o "$out" || true
+    elif command -v grub2-mkconfig >/dev/null 2>&1; then
+      local out
+      if [[ -d /boot/grub2 ]]; then
+        out=/boot/grub2/grub.cfg
+      elif [[ -d /boot/grub ]]; then
+        out=/boot/grub/grub.cfg
+      else
+        out=""
+      fi
+      [[ -n "$out" ]] && run grub2-mkconfig -o "$out" || true
     fi
   fi
 
