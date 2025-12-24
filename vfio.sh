@@ -1879,6 +1879,19 @@ main() {
   require_root
   require_systemd
 
+  # Clearly describe supported environment up front.
+  local bl
+  bl="$(detect_bootloader)"
+  say
+  hdr "Environment support"
+  note "Init system: systemd (required; other init systems are NOT supported by this helper)."
+  note "Boot loader detected: ${bl}"
+  if [[ "$bl" == "grub" ]]; then
+    note "Automatic kernel parameter editing is available for GRUB."
+  else
+    note "Automatic kernel parameter editing is ONLY implemented for GRUB. For ${bl}, you must apply kernel parameters manually when prompted."
+  fi
+
   # Early detection of existing passthrough config (before user makes changes).
   preflight_existing_config_gate
 
@@ -2123,19 +2136,35 @@ main() {
   install_systemd_unit
 
   say
-  hdr "Boot configuration (GRUB)"
+  hdr "Boot configuration (IOMMU / boot loader)"
+  local bl2
+  bl2="$(detect_bootloader)"
   note "IOMMU must be enabled for PCI passthrough to work."
-  note "Recommended: YES (adds amd_iommu=on or intel_iommu=on + iommu=pt)."
-  note "If you answer NO, passthrough may fail unless you already configured IOMMU another way."
-  note "If you answer YES, you will also be offered an optional 'ACS override' (advanced; usually NO)."
-
-  if prompt_yn "Enable IOMMU in GRUB now? (recommended)" Y; then
-    grub_add_kernel_params
+  note "Boot loader detected: ${bl2}"
+  if [[ "$bl2" == "grub" ]]; then
+    note "Recommended: YES (adds amd_iommu=on or intel_iommu=on + iommu=pt to GRUB)."
+    note "If you answer NO, passthrough may fail unless you already configured IOMMU another way."
   else
-    # Still show manual instructions if not using GRUB auto-edit.
-    if [[ "$(detect_bootloader)" != "grub" ]]; then
+    note "Automatic kernel parameter editing is ONLY supported for GRUB. For ${bl2}, you must add the parameters manually."
+    note "If you skip the manual instructions, passthrough may fail."
+  fi
+  note "If you enable IOMMU, you will also be offered an optional 'ACS override' (advanced; usually NO)."
+
+  local q
+  if [[ "$bl2" == "grub" ]]; then
+    q="Enable IOMMU kernel parameters in GRUB now? (recommended)"
+  else
+    q="Show recommended IOMMU kernel parameters and MANUAL instructions now? (recommended)"
+  fi
+
+  if prompt_yn "$q" Y; then
+    if [[ "$bl2" == "grub" ]]; then
+      grub_add_kernel_params
+    else
       print_manual_iommu_instructions
     fi
+  else
+    note "Skipping automatic/manual IOMMU helper. Ensure your kernel parameters enable IOMMU, or passthrough may fail."
   fi
 
   # Optional driver blacklisting
