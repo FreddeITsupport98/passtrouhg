@@ -2205,104 +2205,114 @@ main() {
     note "No suggested modules for vendor $(vendor_name "$guest_vendor") ($guest_vendor)."
   fi
 
-  if prompt_yn "Create $BLACKLIST_FILE to blacklist guest GPU vendor drivers?" N; then
-    local -a mods=() candidates=() recommended=()
-
-    case "${guest_vendor,,}" in
-      10de)
-        candidates=(nouveau nvidia nvidia_drm nvidia_modeset nvidia_uvm)
-        # No safe universal default for NVIDIA -> recommended empty.
-        recommended=()
-        ;;
-      1002)
-        # AMD: amdgpu is often needed for the host GPU on dual-AMD systems.
-        candidates=(amdgpu radeon)
-        # Conservative default: blacklist only the legacy radeon module.
-        recommended=(2)
-        ;;
-      8086)
-        candidates=(i915)
-        # No safe universal default -> recommended empty.
-        recommended=()
-        ;;
-      *)
-        candidates=()
-        recommended=()
-        note "Unknown vendor; no suggested modules."
-        ;;
-    esac
-
-    if (( ${#candidates[@]} == 0 )); then
-      note "No blacklist candidates for this vendor; skipping."
+  # Extra safety: require an explicit BLACKLIST confirmation before entering the submenu.
+  if prompt_yn "Open advanced driver blacklist submenu for $(vendor_name "$guest_vendor") drivers?" N; then
+    if ! confirm_phrase "WARNING: Driver blacklisting is OPTIONAL and can break host graphics if misused. To continue and create $BLACKLIST_FILE, type BLACKLIST." "BLACKLIST"; then
+      note "Skipping driver blacklist (confirmation failed)."
     else
-      say
-      note "Choose which kernel modules to blacklist by number (example: 1 2)."
-      note "Enter 0 for none."
-      if (( ${#recommended[@]} > 0 )); then
-        note "Press ENTER for recommended: ${recommended[*]}"
+      # User typed BLACKLIST; give them one last chance to cancel and proceed without any blacklist.
+      if ! prompt_yn "You typed BLACKLIST. Do you still want to create a driver blacklist file now?" N; then
+        note "Skipping driver blacklist (user cancelled after confirmation)."
       else
-        note "Press ENTER for recommended: (none)"
-      fi
+        local -a mods=() candidates=() recommended=()
 
-      local in="/dev/stdin"
-      local out="/dev/stderr"
-      if [[ -r /dev/tty && -w /dev/tty ]]; then
-        in="/dev/tty"
-        out="/dev/tty"
-      fi
+        case "${guest_vendor,,}" in
+          10de)
+            candidates=(nouveau nvidia nvidia_drm nvidia_modeset nvidia_uvm)
+            # No safe universal default for NVIDIA -> recommended empty.
+            recommended=()
+            ;;
+          1002)
+            # AMD: amdgpu is often needed for the host GPU on dual-AMD systems.
+            candidates=(amdgpu radeon)
+            # Conservative default: blacklist only the legacy radeon module.
+            recommended=(2)
+            ;;
+          8086)
+            candidates=(i915)
+            # No safe universal default -> recommended empty.
+            recommended=()
+            ;;
+          *)
+            candidates=()
+            recommended=()
+            note "Unknown vendor; no suggested modules."
+            ;;
+        esac
 
-      while true; do
-        local i
-        for i in "${!candidates[@]}"; do
-          local n=$((i+1))
-          printf '  [%d] blacklist %s\n' "$n" "${candidates[$i]}" >"$out"
-        done
-
-        printf 'Select modules to blacklist (numbers): ' >"$out"
-        local raw
-        read -r raw <"$in" || raw=""
-        raw="$(trim "$raw")"
-
-        local -a picks=()
-
-        if [[ -z "$raw" ]]; then
-          picks=("${recommended[@]}")
-        elif [[ "$raw" == "0" ]]; then
-          picks=()
+        if (( ${#candidates[@]} == 0 )); then
+          note "No blacklist candidates for this vendor; skipping."
         else
-          # allow commas and spaces
-          raw="${raw//,/ }"
-          local tok
-          for tok in $raw; do
-            [[ "$tok" =~ ^[0-9]+$ ]] || { printf '%s\n' "Invalid selection: '$tok'" >"$out"; picks=(); break; }
-            (( tok >= 1 && tok <= ${#candidates[@]} )) || { printf '%s\n' "Out of range: $tok" >"$out"; picks=(); break; }
-            # de-dupe
-            local seen=0 x
-            for x in "${picks[@]}"; do
-              [[ "$x" == "$tok" ]] && { seen=1; break; }
+          say
+          note "Choose which kernel modules to blacklist by number (example: 1 2)."
+          note "Enter 0 for none."
+          if (( ${#recommended[@]} > 0 )); then
+            note "Press ENTER for recommended: ${recommended[*]}"
+          else
+            note "Press ENTER for recommended: (none)"
+          fi
+
+          local in="/dev/stdin"
+          local out="/dev/stderr"
+          if [[ -r /dev/tty && -w /dev/tty ]]; then
+            in="/dev/tty"
+            out="/dev/tty"
+          fi
+
+          while true; do
+            local i
+            for i in "${!candidates[@]}"; do
+              local n=$((i+1))
+              printf '  [%d] blacklist %s\n' "$n" "${candidates[$i]}" >"$out"
             done
-            (( seen )) || picks+=("$tok")
+
+            printf 'Select modules to blacklist (numbers): ' >"$out"
+            local raw
+            read -r raw <"$in" || raw=""
+            raw="$(trim "$raw")"
+
+            local -a picks=()
+
+            if [[ -z "$raw" ]]; then
+              picks=("${recommended[@]}")
+            elif [[ "$raw" == "0" ]]; then
+              picks=()
+            else
+              # allow commas and spaces
+              raw="${raw//,/ }"
+              local tok
+              for tok in $raw; do
+                [[ "$tok" =~ ^[0-9]+$ ]] || { printf '%s\n' "Invalid selection: '$tok'" >"$out"; picks=(); break; }
+                (( tok >= 1 && tok <= ${#candidates[@]} )) || { printf '%s\n' "Out of range: $tok" >"$out"; picks=(); break; }
+                # de-dupe
+                local seen=0 x
+                for x in "${picks[@]}"; do
+                  [[ "$x" == "$tok" ]] && { seen=1; break; }
+                done
+                (( seen )) || picks+=("$tok")
+              done
+              # if we broke due to invalid input, re-prompt
+              if [[ "$raw" != "0" && -n "$raw" && ${#picks[@]} -eq 0 ]]; then
+                continue
+              fi
+            fi
+
+            mods=()
+            local p
+            for p in "${picks[@]}"; do
+              mods+=("${candidates[$((p-1))]}")
+            done
+            break
           done
-          # if we broke due to invalid input, re-prompt
-          if [[ "$raw" != "0" && -n "$raw" && ${#picks[@]} -eq 0 ]]; then
-            continue
+
+          if (( ${#mods[@]} > 0 )); then
+            write_optional_blacklist "$guest_vendor" "${mods[@]}"
+            say "Wrote $BLACKLIST_FILE"
+            say "NOTE: If you blacklist modules, updating initramfs is strongly recommended."
+          else
+            say "No modules selected; skipping blacklist file."
           fi
         fi
-
-        mods=()
-        local p
-        for p in "${picks[@]}"; do
-          mods+=("${candidates[$((p-1))]}")
-        done
-        break
-      done
-
-      if (( ${#mods[@]} > 0 )); then
-        write_optional_blacklist "$guest_vendor" "${mods[@]}"
-        say "Wrote $BLACKLIST_FILE"
-        say "NOTE: If you blacklist modules, updating initramfs is strongly recommended."
-      else
-        say "No modules selected; skipping blacklist file."
       fi
     fi
   fi
