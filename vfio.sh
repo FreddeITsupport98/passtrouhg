@@ -19,6 +19,7 @@ set -euo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
 
+# --- Configuration ---
 CONF_FILE="/etc/vfio-gpu-passthrough.conf"
 BIND_SCRIPT="/usr/local/sbin/vfio-bind-selected-gpu.sh"
 AUDIO_SCRIPT="/usr/local/bin/vfio-set-host-audio.sh"
@@ -238,31 +239,56 @@ drm_card_for_bdf() {
 }
 
 gpu_in_use_preflight() {
-  # Best-effort: warn/fail if something appears to be using the selected guest GPU.
   local bdf="$1"
-
+  
+  # 1. Check for standard DRM drivers (existing logic)
   local drv
   drv="$(bdf_driver_name "$bdf")"
-
-  # If already vfio-pci, fine.
   [[ "$drv" == "vfio-pci" ]] && return 0
-
-  # If no driver, likely safe.
   [[ "$drv" == "<none>" ]] && return 0
 
-  # If the GPU is bound to a graphics driver, it *might* be in active use.
   local card
   if card="$(drm_card_for_bdf "$bdf" 2>/dev/null)"; then
     say "WARN: Guest GPU $bdf is currently a DRM device: $card (driver: $drv)"
-
     if command -v lsof >/dev/null 2>&1; then
       if lsof "$card" >/dev/null 2>&1; then
         say "WARN: $card is currently opened by some process(es)."
       fi
     fi
-
     if ! confirm_phrase "Refusing to continue by default (binding an in-use GPU can crash your desktop)." "I UNDERSTAND"; then
       die "Aborted: guest GPU appears to be in use"
+    fi
+  fi
+
+  # 2. Check for EFI/Simple Framebuffer attachment on Boot VGA.
+  if [[ -f "/sys/bus/pci/devices/$bdf/boot_vga" ]]; then
+    local is_boot_vga
+    is_boot_vga="$(cat "/sys/bus/pci/devices/$bdf/boot_vga")"
+    
+    if [[ "$is_boot_vga" == "1" ]]; then
+      # Check if a framebuffer driver is active in iomem
+      if grep -qiE '(efifb|simple-framebuffer|vesafb)' /proc/iomem 2>/dev/null; then
+        say "${C_YELLOW}WARN: This GPU is marked as Boot VGA and a framebuffer is active.${C_RESET}"
+        note "      This can lock the GPU memory, causing VFIO binding to fail ("Header type 127" / hangs)."
+        
+        local fb_param=""
+        if grep -qi "simple-framebuffer" /proc/iomem 2>/dev/null; then
+          fb_param="video=simplefb:off"
+        elif grep -qi "efifb" /proc/iomem 2>/dev/null; then
+          fb_param="video=efifb:off"
+        else
+          fb_param="video=vesafb:off"
+        fi
+
+        if prompt_yn "Add '$fb_param' to GRUB kernel parameters to disable this framebuffer?" Y; then
+          export GRUB_EXTRA_PARAMS="${GRUB_EXTRA_PARAMS:-} ${fb_param}"
+          say "Queued '$fb_param' for GRUB update. It will be applied if you enable IOMMU/GRUB editing."
+        else
+          if ! prompt_yn "Continue without fixing (higher risk of passthrough failure)?" N; then
+            die "Aborted due to active framebuffer lock."
+          fi
+        fi
+      fi
     fi
   fi
 }
@@ -343,6 +369,37 @@ grub_has_vfio_params() {
   cmd="$(grub_cmdline_value 2>/dev/null || true)"
   [[ -n "$cmd" ]] || return 1
   grep -Eq '(^|[[:space:]])(amd_iommu=on|intel_iommu=on|iommu=pt|pcie_acs_override=downstream,multifunction)([[:space:]]|$)' <<<"$cmd"
+}
+
+# CPU virtualization / Secure Boot helpers (non-fatal diagnostics)
+check_cpu_features() {
+  say
+  hdr "CPU Virtualization Support"
+
+  local cpu_flags
+  cpu_flags="$(grep -m1 -E '^flags' /proc/cpuinfo 2>/dev/null || true)"
+
+  if echo "$cpu_flags" | grep -qwE 'vmx|svm'; then
+    say "OK: CPU virtualization extensions (vmx/svm) detected."
+  else
+    say "WARN: CPU virtualization extensions (vmx/svm) NOT detected."
+    say "      Ensure VT-x (Intel) or SVM/AMD-V (AMD) is enabled in BIOS/UEFI."
+  fi
+}
+
+check_secure_boot() {
+  # Only relevant on UEFI systems.
+  if [[ ! -d /sys/firmware/efi/efivars ]]; then
+    return 0
+  fi
+
+  if command -v mokutil >/dev/null 2>&1; then
+    if mokutil --sb-state 2>/dev/null | grep -qi "SecureBoot enabled"; then
+      say "WARN: Secure Boot is ENABLED."
+      note "      Strict Secure Boot policies may block unsigned modules or lock down the kernel."
+      note "      If vfio modules fail to load, consider testing with Secure Boot temporarily disabled."
+    fi
+  fi
 }
 
 vfio_config_health() {
@@ -507,14 +564,14 @@ self_test() {
     print_kv "PipeWire/wpctl" "SKIP (wpctl not installed)"
   fi
 
-  # GPU discovery
-  if have_cmd lspci; then
-    local count
-    count="$(gpu_discover_all | wc -l | tr -d ' ')"
-    print_kv "GPU discovery" "Found ${count} GPU(s)"
-  else
-    print_kv "GPU discovery" "SKIP (lspci not installed)"
-  fi
+  # GPU discovery (sysfs-based)
+  local count
+  count="$(gpu_discover_all_sysfs | wc -l | tr -d ' ')"
+  print_kv "GPU discovery" "Found ${count} GPU(s)"
+
+  # CPU virtualization + Secure Boot checks (non-fatal)
+  check_cpu_features
+  check_secure_boot
 
   if (( fail )); then
     say "Self-test result: FAIL"
@@ -604,6 +661,17 @@ detect_existing_vfio_report() {
   if [[ -d /etc/dracut.conf.d ]]; then
     print_kv "/etc/dracut.conf.d" "present"
     print_kv "vfio in dracut conf" "$(grep -RIn --no-messages -E 'vfio|vfio-pci|add_drivers|force_drivers' /etc/dracut.conf.d 2>/dev/null | head -n 20 | tr '\n' ' ' || true)"
+  fi
+
+  # vendor-reset module (useful for AMD reset bugs)
+  if [[ -d /sys/module/vendor_reset ]]; then
+    print_kv "vendor-reset" "Loaded (good for AMD reset bugs)"
+  else
+    if command -v lspci >/dev/null 2>&1 && lspci -n | grep -q "1002:"; then
+      print_kv "vendor-reset" "MISSING (Recommended for AMD GPUs with reset issues)"
+    else
+      print_kv "vendor-reset" "Not loaded"
+    fi
   fi
 
   # GRUB defaults
@@ -792,35 +860,73 @@ select_from_list() {
 
 # ---------------- Discovery ----------------
 
-gpu_discover_all() {
+# Helper to read sysfs values (strips leading 0x if present)
+sysfs_read() {
+  local bdf="$1" file="$2" val
+  if [[ -r "/sys/bus/pci/devices/$bdf/$file" ]]; then
+    read -r val <"/sys/bus/pci/devices/$bdf/$file"
+    val="${val#0x}"
+    echo "$val"
+  else
+    echo ""
+  fi
+}
+
+# Sysfs-based GPU discovery (more robust than parsing lspci output)
+gpu_discover_all_sysfs() {
   # Emits TSV per GPU:
   # GPU_BDF \t GPU_DESC \t VENDOR_ID \t DEVICE_ID \t AUDIO_BDFS(comma) \t AUDIO_DESCS(pipe)
-  local line bdf desc ids vendor dev slot
-  local audio_bdfs audio_descs audio_line
+  local dev_path bdf class vendor device desc slot
+  local audio_bdfs audio_descs
 
-  while IFS= read -r line; do
-    bdf="$(awk '{print $1}' <<<"$line")"
-    desc="$(cut -d']' -f2- <<<"$line" | sed 's/^: *//')"
-    ids="$(grep -oE '\[[0-9a-f]{4}:[0-9a-f]{4}\]' <<<"$line" | head -n1 | tr -d '[]')"
-    vendor="${ids%%:*}"
-    dev="${ids##*:}"
+  for dev_path in /sys/bus/pci/devices/*; do
+    [[ -e "$dev_path" ]] || continue
+    bdf="$(basename "$dev_path")"
+
+    class="$(sysfs_read "$bdf" class)"
+    [[ -n "$class" ]] || continue
+    # High byte 0x03 = Display controller (VGA/3D/etc). After stripping 0x, class looks like 030000.
+    local class_base="${class:0:2}"
+    [[ "$class_base" == "03" ]] || continue
+
+    vendor="$(sysfs_read "$bdf" vendor)"
+    device="$(sysfs_read "$bdf" device)"
+
+    desc=""
+    if have_cmd lspci; then
+      # Best-effort human description; safe to fail.
+      desc="$(lspci -Dnn -s "$bdf" 2>/dev/null | sed 's/^[^]]*] *//')"
+      desc="$(trim "$desc")"
+    fi
 
     slot="${bdf%.*}"
     audio_bdfs=""
     audio_descs=""
 
-    # Find all Audio device functions in the same slot (covers AMD/NVIDIA/other).
-    while IFS= read -r audio_line; do
-      local abdf adesc
-      abdf="$(awk '{print $1}' <<<"$audio_line")"
-      adesc="$(cut -d']' -f2- <<<"$audio_line" | sed 's/^: *//')"
-      audio_bdfs+="${audio_bdfs:+,}$abdf"
-      audio_descs+="${audio_descs:+|}$(trim "$adesc")"
-    done < <(lspci -Dnn -s "${slot}.*" 2>/dev/null | awk '/Audio device/ {print}')
+    # Scan functions 1-7 in the same slot for High Definition Audio (class 0x0403xx).
+    local func abdf aclass aclass_prefix adesc
+    for func in 1 2 3 4 5 6 7; do
+      abdf="${slot}.${func}"
+      if [[ -d "/sys/bus/pci/devices/$abdf" ]]; then
+        aclass="$(sysfs_read "$abdf" class)"
+        [[ -n "$aclass" ]] || continue
+        aclass_prefix="${aclass:0:4}"
+        if [[ "$aclass_prefix" == "0403" ]]; then
+          audio_bdfs+="${audio_bdfs:+,}$abdf"
+          if have_cmd lspci; then
+            adesc="$(lspci -Dnn -s "$abdf" 2>/dev/null | sed 's/^[^]]*] *//')"
+            adesc="$(trim "$adesc")"
+          else
+            adesc="Audio"
+          fi
+          audio_descs+="${audio_descs:+|}$adesc"
+        fi
+      fi
+    done
 
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$bdf" "$(trim "$desc")" "$vendor" "$dev" "$audio_bdfs" "$audio_descs"
-  done < <(lspci -Dnn | awk '/(VGA compatible controller|3D controller|Display controller)/ {print}')
+      "$bdf" "${desc:-Unknown}" "$vendor" "$device" "$audio_bdfs" "$audio_descs"
+  done
 }
 
 audio_devices_discover_all() {
@@ -843,8 +949,13 @@ pipewire_sinks_discover() {
   have_cmd wpctl || return 1
 
   # Silence PipeWire connection noise and handle "wpctl can't connect" gracefully.
+  # Use a small timeout if available so we don't hang when PipeWire is unhappy.
   local status
-  status="$(wpctl_cmd status 2>/dev/null || true)"
+  if have_cmd timeout; then
+    status="$(timeout 2s wpctl_cmd status 2>/dev/null || true)"
+  else
+    status="$(wpctl_cmd status 2>/dev/null || true)"
+  fi
   [[ -n "$status" ]] || return 1
 
   local -a ids=()
@@ -922,6 +1033,22 @@ vfio_virqfd
 EOF
 }
 
+install_dracut_config() {
+  # Only applies on dracut-based systems.
+  [[ -d /etc/dracut.conf.d ]] || return 0
+
+  local file="/etc/dracut.conf.d/10-vfio.conf"
+  backup_file "$file"
+
+  write_file_atomic "$file" 0644 "root:root" <<EOF
+# Generated by $SCRIPT_NAME on $(date -Is)
+# Ensure VFIO modules are included and loaded early in the initramfs.
+force_drivers+=" vfio vfio_pci vfio_iommu_type1 vfio_virqfd "
+EOF
+
+  say "Installed Dracut configuration to ensure early VFIO loading."
+}
+
 write_optional_blacklist() {
   local vendor_id="$1"; shift
   local -a mods=("$@")
@@ -940,6 +1067,31 @@ write_optional_blacklist() {
 
 $(for m in "${mods[@]}"; do echo "blacklist $m"; done)
 EOF
+}
+
+install_softdep_config() {
+  local guest_vendor="$1"
+  local target_driver=""
+  
+  case "${guest_vendor,,}" in
+    10de) target_driver="nvidia" ;;
+    1002) target_driver="amdgpu" ;;
+    8086) target_driver="i915" ;;
+    *) return 0 ;; # Unknown vendor, skip
+  esac
+
+  local file="/etc/modprobe.d/vfio-softdep.conf"
+  backup_file "$file"
+
+  write_file_atomic "$file" 0644 "root:root" <<EOF
+# Generated by $SCRIPT_NAME on $(date -Is)
+# Ensures vfio-pci loads before the graphics driver to prevent race conditions.
+
+softdep $target_driver pre: vfio-pci
+softdep ${target_driver}* pre: vfio-pci
+EOF
+
+  say "Installed soft dependency to ensure vfio-pci loads before $target_driver."
 }
 
 # ---------------- GRUB / kernel params ----------------
@@ -1016,9 +1168,26 @@ grub_write_cmdline_in_place() {
     return 0
   fi
 
-  # Replace EXACTLY that line number.
-  # Use sed -i without appending anything.
+  # SAFETY 1: Verify backup exists and has content.
+  local bak="/etc/default/grub.bak.${RUN_TS}"
+  if [[ ! -s "$bak" ]]; then
+    die "Backup failed or empty ($bak). Aborting GRUB edit."
+  fi
+
+  # Apply edit: replace EXACTLY that line number.
   sed -i "${ln}s|^${key}=.*|${key}=\"${new_cmdline//|/\\|}\"|" /etc/default/grub
+
+  # SAFETY 2: Syntax check.
+  if ! bash -n /etc/default/grub 2>/dev/null; then
+    cp -a "$bak" /etc/default/grub
+    die "Syntax error in /etc/default/grub after edit. Reverted to backup."
+  fi
+
+  # SAFETY 3: Logic check – ensure the key still exists after edit.
+  if ! grep -q "^${key}=" /etc/default/grub; then
+    cp -a "$bak" /etc/default/grub
+    die "GRUB edit removed ${key} line unexpectedly. Reverted to backup."
+  fi
 }
 
 add_param_once() {
@@ -1078,7 +1247,8 @@ print_manual_iommu_instructions() {
 }
 
 grub_add_kernel_params() {
-  local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt")
+  # Merge standard params with any discovered extras (for example video=efifb:off).
+  local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt" ${GRUB_EXTRA_PARAMS:-})
 
   if [[ ! -f /etc/default/grub ]]; then
     print_manual_iommu_instructions
@@ -1907,7 +2077,7 @@ main() {
   fi
   say
 
-  # Discover GPUs
+  # Discover GPUs (via sysfs; lspci is only used for human-readable descriptions)
   local -a gpu_bdfs=() gpu_descs=() gpu_vendor_ids=() gpu_audio_bdfs_csv=() gpu_audio_descs=()
   local gpu_bdf gpu_desc vendor_id device_id audio_csv audio_descs
   while IFS=$'\t' read -r gpu_bdf gpu_desc vendor_id device_id audio_csv audio_descs; do
@@ -1917,7 +2087,7 @@ main() {
     gpu_vendor_ids+=("$vendor_id")
     gpu_audio_bdfs_csv+=("$audio_csv")
     gpu_audio_descs+=("$audio_descs")
-  done < <(gpu_discover_all)
+  done < <(gpu_discover_all_sysfs)
 
   if (( ${#gpu_bdfs[@]} < 2 )); then
     die "Found fewer than 2 GPUs. This script assumes a host GPU + guest GPU."
@@ -1995,6 +2165,25 @@ main() {
 
   # Preflight: IOMMU group gate.
   iommu_group_preflight "$guest_gpu" "$guest_audio_csv"
+
+  # Check for AMD Reset Bug mitigation (vendor-reset)
+  if [[ "${guest_vendor,,}" == "1002" ]]; then
+    say
+    hdr "AMD Reset Bug Check"
+    if [[ -d /sys/module/vendor_reset ]]; then
+      say "OK: 'vendor-reset' module is loaded."
+      if ! grep -q "vendor-reset" "$MODULES_LOAD" 2>/dev/null; then
+        say "Adding vendor-reset to $MODULES_LOAD so it loads at boot..."
+        if (( ! DRY_RUN )); then
+          printf '%s\n' "vendor-reset" >>"$MODULES_LOAD"
+        fi
+      fi
+    else
+      say "${C_YELLOW}WARN: AMD GPU selected but 'vendor-reset' module not found.${C_RESET}"
+      note "Many AMD cards (Polaris/Vega/Navi) cannot be reliably reused after VM shutdown without this module."
+      note "Recommended: install the 'vendor-reset' kernel module (see vendor-reset project docs) after this script finishes."
+    fi
+  fi
 
   # Host audio selection (important when AMD HDMI audio IDs repeat, e.g. 1002:ab28)
   local host_audio_bdfs_csv="${gpu_audio_bdfs_csv[$host_idx]}"
@@ -2132,6 +2321,19 @@ main() {
 
   write_conf "$host_gpu" "$host_audio_bdfs_csv" "$host_audio_node_name" "$guest_gpu" "$guest_audio_csv" "$guest_vendor"
   install_vfio_modules_load
+  install_dracut_config
+
+  say
+  hdr "Module load ordering (optional soft dependency)"
+  note "To reduce race conditions where the GPU driver (amdgpu/nvidia/i915) grabs the card before vfio-pci,"
+  note "you can install a softdep rule so vfio-pci is always loaded first for the guest GPU vendor."
+  note "This is usually safe, but if you have unusual driver setups you may prefer to skip it."
+  if prompt_yn "Install vfio-pci softdep for $(vendor_name "$guest_vendor") now?" Y; then
+    install_softdep_config "$guest_vendor"
+  else
+    note "Skipping vfio softdep installation. You can add it later in /etc/modprobe.d/vfio-softdep.conf if needed."
+  fi
+
   install_bind_script
   install_systemd_unit
 
