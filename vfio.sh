@@ -255,6 +255,27 @@ gpu_in_use_preflight() {
         say "WARN: $card is currently opened by some process(es)."
       fi
     fi
+
+    # 1.5 Check if the HDMI Audio associated with this GPU is in use
+    local slot="${bdf%.*}"
+    local audio_bdf="${slot}.1"  # Commonly function 1 is the HDMI audio function
+    if [[ -d "/sys/bus/pci/devices/$audio_bdf" ]]; then
+      local snd snd_card_path card_id
+      for snd in /sys/bus/pci/devices/$audio_bdf/sound/card*; do
+        [[ -d "$snd" ]] || continue
+        card_id="${snd##*/card}"
+        if command -v fuser >/dev/null 2>&1; then
+          if fuser -v /dev/snd/pcmC"${card_id}"D* >/dev/null 2>&1; then
+            say "${C_YELLOW}WARN: HDMI Audio device ($audio_bdf) for this GPU appears to be in use (ALSA card $card_id).${C_RESET}"
+            note "      PulseAudio/PipeWire is likely holding the HDMI audio device open."
+            if ! confirm_phrase "Binding this GPU may crash or restart your audio server. Continue?" "I UNDERSTAND"; then
+              die "Aborted due to active audio device lock."
+            fi
+          fi
+        fi
+      done
+    fi
+
     if ! confirm_phrase "Refusing to continue by default (binding an in-use GPU can crash your desktop)." "I UNDERSTAND"; then
       die "Aborted: guest GPU appears to be in use"
     fi
@@ -879,13 +900,19 @@ gpu_discover_all_sysfs() {
   local dev_path bdf class vendor device desc slot
   local audio_bdfs audio_descs
 
+  # CACHE: Run lspci once to speed up the loop
+  local lspci_cache=""
+  if have_cmd lspci; then
+    lspci_cache="$(lspci -Dnn 2>/dev/null || true)"
+  fi
+
   for dev_path in /sys/bus/pci/devices/*; do
     [[ -e "$dev_path" ]] || continue
     bdf="$(basename "$dev_path")"
 
     class="$(sysfs_read "$bdf" class)"
     [[ -n "$class" ]] || continue
-    # High byte 0x03 = Display controller (VGA/3D/etc). After stripping 0x, class looks like 030000.
+    # High byte 0x03 = Display controller (VGA/3D/etc).
     local class_base="${class:0:2}"
     [[ "$class_base" == "03" ]] || continue
 
@@ -893,9 +920,9 @@ gpu_discover_all_sysfs() {
     device="$(sysfs_read "$bdf" device)"
 
     desc=""
-    if have_cmd lspci; then
-      # Best-effort human description; safe to fail.
-      desc="$(lspci -Dnn -s "$bdf" 2>/dev/null | sed 's/^[^]]*] *//')"
+    if [[ -n "$lspci_cache" ]]; then
+      # Grep from cache instead of running lspci again.
+      desc="$(grep -F "$bdf" <<<"$lspci_cache" | head -n1 | sed 's/^[^]]*] *//')"
       desc="$(trim "$desc")"
     fi
 
@@ -913,8 +940,8 @@ gpu_discover_all_sysfs() {
         aclass_prefix="${aclass:0:4}"
         if [[ "$aclass_prefix" == "0403" ]]; then
           audio_bdfs+="${audio_bdfs:+,}$abdf"
-          if have_cmd lspci; then
-            adesc="$(lspci -Dnn -s "$abdf" 2>/dev/null | sed 's/^[^]]*] *//')"
+          if [[ -n "$lspci_cache" ]]; then
+            adesc="$(grep -F "$abdf" <<<"$lspci_cache" | head -n1 | sed 's/^[^]]*] *//')"
             adesc="$(trim "$adesc")"
           else
             adesc="Audio"
