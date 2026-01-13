@@ -1,5 +1,7 @@
 # vfio.sh – Safe multi‑GPU VFIO passthrough helper
 
+> **Status:** This script is a highly defensive, feature‑rich VFIO helper that has been hardened for modern Fedora/RHEL/Arch‑style setups, AMD reset quirks, and boot‑VGA framebuffer conflicts. It is designed as a _host configuration wizard_, **not** a VM manager.
+
 This repository contains a single, self‑contained Bash script, `vfio.sh`, that guides you through setting up **GPU passthrough with VFIO** in a way that is:
 
 - **Multi‑vendor aware** – works with AMD, NVIDIA and Intel GPUs
@@ -19,6 +21,8 @@ The script is designed to be **interactive, defensive and reversible**, so that 
 
 ### Main goals
 
+At a high level, `vfio.sh` aims to be a **single, auditable entry‑point** for GPU passthrough host configuration. Instead of copy‑pasting pieces from multiple guides (GRUB tweaks, modprobe snippets, systemd units, scripts, audio hacks), this tool assembles them under one orchestrated, interactive flow.
+
 1. **Bind only the devices you explicitly chose** to `vfio-pci`:
    - The script discovers all GPUs and audio devices with `lspci`.
    - You pick a **guest GPU** (for passthrough) and a **host GPU** (for your desktop).
@@ -36,6 +40,8 @@ The script is designed to be **interactive, defensive and reversible**, so that 
    - Backups are created **once per run** and a standalone rollback script is generated.
 
 ### Files created / managed
+
+This section describes the core artifacts the script manages. All paths are centralized near the top of `vfio.sh` as simple variables (`CONF_FILE`, `BIND_SCRIPT`, etc.), so you can easily adjust them if you want a different layout.
 
 The script uses the following paths on the host:
 
@@ -63,6 +69,8 @@ All writes are done via an **atomic helper** (`write_file_atomic`) to avoid leav
 ---
 
 ## Requirements
+
+The script tries to detect as much as possible at runtime, and will **refuse to continue** or fall back to read‑only/reporting modes when critical assumptions are not met.
 
 ### Hardware assumptions
 
@@ -94,6 +102,8 @@ Recommended:
 ---
 
 ## Installation
+
+You can keep `vfio.sh` anywhere (e.g. inside this repository, `/root`, or a custom scripts directory). It is self‑contained and does not require installation beyond being executable.
 
 Copy the script somewhere convenient, mark it executable and run it:
 
@@ -176,6 +186,16 @@ The script supports several modes controlled by flags. By default, without any f
 ---
 
 ## Interactive wizard (default mode)
+
+The default mode (`./vfio.sh` with no arguments) walks you through a **stateful wizard**. It always:
+
+1. Assesses existing VFIO‑related state.
+2. Guides you through GPU + audio selection.
+3. Writes configuration and helper scripts.
+4. Optionally edits kernel parameters and initramfs.
+5. Emits a rollback script.
+
+Below is a step‑by‑step view corresponding closely to the internal functions.
 
 When run without `--verify`, `--detect`, `--self-test` or `--reset`, the script enters an interactive **four‑step wizard** after the preflight checks.
 
@@ -276,6 +296,13 @@ The chosen sink’s `node.name` is stored in `HOST_AUDIO_NODE_NAME` inside `CONF
 
 ## Applying changes
 
+Internally, the installer is structured as a clear **"plan then apply"** sequence:
+
+1. Discover devices and validate assumptions.
+2. Let the user choose host vs guest roles.
+3. Confirm the selections and explain consequences.
+4. **Only then** touch `/etc`, systemd units, GRUB, or initramfs.
+
 After your guest/host GPU and audio choices are made, the script prints a summary:
 
 - Host GPU BDF
@@ -292,23 +319,50 @@ When you confirm, the following actions are performed:
    - Re‑validate that all BDFs still exist.
    - Ensure no guest audio BDF equals the host audio BDF.
 
-2. **Write configuration**
+3. **Write configuration**
    - `/etc/vfio-gpu-passthrough.conf` is written with:
-     - `HOST_GPU_BDF`
-     - `HOST_AUDIO_BDFS_CSV`
-     - `HOST_AUDIO_NODE_NAME`
-     - `GUEST_GPU_BDF`
-     - `GUEST_AUDIO_BDFS_CSV`
-     - `GUEST_GPU_VENDOR_ID`
+     - `HOST_GPU_BDF` – PCI BDF of the GPU that will stay on the host.
+     - `HOST_AUDIO_BDFS_CSV` – comma‑separated PCI BDFs for host‑side audio (usually one).
+     - `HOST_AUDIO_NODE_NAME` – optional PipeWire `node.name` corresponding to the host output sink.
+     - `GUEST_GPU_BDF` – PCI BDF of the GPU to passthrough.
+     - `GUEST_AUDIO_BDFS_CSV` – comma‑separated PCI BDFs for HDMI/DP audio functions you chose for the guest.
+     - `GUEST_GPU_VENDOR_ID` – raw vendor ID (e.g. `1002` for AMD, `10de` for NVIDIA, `8086` for Intel), used for vendor‑specific logic (blacklist suggestions, softdeps, AMD reset hints).
+
+4. **Install VFIO modules‑load and (optionally) Dracut config**
+   - `/etc/modules-load.d/vfio.conf` ensures core VFIO modules are requested at early boot:
+     - `vfio`
+     - `vfio_pci`
+     - `vfio_iommu_type1`
+     - `vfio_virqfd`
+   - If `/etc/dracut.conf.d` exists, the script also writes `/etc/dracut.conf.d/10-vfio.conf`:
+     - Adds `force_drivers+=" vfio vfio_pci vfio_iommu_type1 vfio_virqfd "` so Dracut **includes and loads** VFIO early inside the initramfs.
+     - This is especially important on Fedora/RHEL/CentOS/SUSE/Arch‑style Dracut setups, where `/etc/modules-load.d` alone is often not enough.
+
+5. **(Optional) Module soft‑dependency for vendor drivers**
+   - The script can add an optional **softdep** in `/etc/modprobe.d/vfio-softdep.conf` for the guest GPU vendor:
+     - For NVIDIA: `softdep nvidia pre: vfio-pci`
+     - For AMD: `softdep amdgpu pre: vfio-pci`
+     - For Intel: `softdep i915 pre: vfio-pci`
+   - This nudges the kernel to load `vfio-pci` **before** the vendor GPU driver, reducing races where the vendor driver grabs the card before VFIO can.
+   - You are prompted before this is done and can skip it if you have a non‑standard driver stack.
 
 3. **Install VFIO modules‑load**
    - `/etc/modules-load.d/vfio.conf` ensures VFIO modules are present early.
 
-4. **Install & enable bind script and systemd unit**
-   - `/usr/local/sbin/vfio-bind-selected-gpu.sh` – takes the configured BDFs, unbinds them from current drivers, sets `driver_override` to `vfio-pci` and binds them.
-   - `/etc/systemd/system/vfio-bind-selected-gpu.service` – runs once at boot, before display manager/libvirt; enabled via `systemctl enable`.
+6. **Install & enable bind script and systemd unit**
+   - `/usr/local/sbin/vfio-bind-selected-gpu.sh` – a focused helper that:
+     - Reads `/etc/vfio-gpu-passthrough.conf`.
+     - For each configured guest BDF (GPU + optional audio):
+       - Unbinds from the current driver (if any).
+       - Writes `vfio-pci` into `driver_override`.
+       - Binds the device to `vfio-pci`.
+     - Ensures host audio devices have `driver_override` cleared so that they stay or return to their regular drivers.
+   - `/etc/systemd/system/vfio-bind-selected-gpu.service` – a **oneshot** service that:
+     - Runs after `systemd-modules-load.service`.
+     - Runs **before** `display-manager.service`, `libvirtd.service`, `virtqemud.service`, and `multi-user.target`.
+     - Is `WantedBy=multi-user.target` and left `RemainAfterExit=yes`.
 
-5. **(Optional) GRUB / kernel parameter updates**
+7. **(Optional) GRUB / kernel parameter updates**
    - You are asked whether to enable IOMMU in GRUB.
    - If yes and GRUB is detected:
      - The script finds `GRUB_CMDLINE_LINUX_DEFAULT` or `GRUB_CMDLINE_LINUX` in `/etc/default/grub`.
@@ -319,24 +373,24 @@ When you confirm, the following actions are performed:
      - It regenerates `grub.cfg` using `update-grub` or `grub-mkconfig`.
    - If GRUB is not used, it prints manual instructions for adding the kernel parameters to your bootloader configuration.
 
-6. **(Optional) Driver blacklisting**
+8. **(Optional) Driver blacklisting**
    - You are given a vendor‑specific list of candidate modules to blacklist (e.g. `nouveau`, `nvidia*` for NVIDIA; `amdgpu`/`radeon` for AMD; `i915` for Intel).
    - You can pick none or multiple by number; recommended defaults are conservative (e.g. AMD defaults to blacklisting only `radeon`).
    - If you choose some, `/etc/modprobe.d/vfio-optional-blacklist.conf` is written accordingly and you are advised to rebuild the initramfs.
 
-7. **(Optional) Initramfs update**
+9. **(Optional) Initramfs update**
    - You are asked whether to rebuild initramfs (recommended).
    - If yes, the script tries `update-initramfs`, `mkinitcpio` or `dracut` in that order.
 
-8. **Rollback script**
+10. **Rollback script**
    - A rollback script `/root/vfio-rollback-<timestamp>.sh` is generated.
    - This script attempts to restore backups or remove managed files and rebuild boot config and initramfs.
 
-9. **(Optional) User audio unit**
+11. **(Optional) User audio unit**
    - You are offered to install a per‑user systemd unit that calls `/usr/local/bin/vfio-set-host-audio.sh` after login.
    - This helper uses `HOST_AUDIO_NODE_NAME` (or, as fallback, BDF‑derived PCI tags) to set the default PipeWire sink, or uses PulseAudio `pactl` when available.
 
-10. **Final instructions**
+12. **Final instructions**
     - Reboot is required for the VFIO bindings and new kernel params to take full effect.
     - After reboot, you should verify with `lspci -nnk` that:
       - Guest GPU and guest audio functions are using `vfio-pci`.
@@ -394,16 +448,23 @@ You will be asked to type `RESET VFIO` to confirm. After reset and reboot, your 
 
 ## Safety model
 
+The script explicitly treats **safety and recoverability** as first‑class features. Several mechanisms work together to keep your host bootable and debuggable:
+
 The script implements several layers of protection:
 
-- **Atomic writes** via `mktemp` + `install` + rename.
-- **Backups** for every edited file (notably `/etc/default/grub`).
-- **No new GRUB cmdline key** is created; only the existing `GRUB_CMDLINE_LINUX(_DEFAULT)` line is modified.
-- **Token‑wise addition/removal of kernel params**, no free‑form string munging.
-- **IOMMU group inspection** and forced acknowledgement for unsafe group sharing.
-- **Driver sanity** – host audio may not be `vfio-pci` at boot; guest must be.
-- **Explicit confirmation phrases** for destructive or high‑risk actions.
-- **`--dry-run` everywhere** – any operational mode can be previewed without changing the system.
+- **Atomic writes** via `mktemp` + `install` + rename for all managed files.
+- **Backups** for every edited file (notably `/etc/default/grub`, modules‑load, modprobe snippets, systemd units).
+- **No new GRUB cmdline key** is created; only the existing `GRUB_CMDLINE_LINUX(_DEFAULT)` is ever modified, and only after a successful backup.
+- **Token‑wise addition/removal of kernel params**, avoiding accidental substring corruption.
+- **IOMMU group inspection** with an explicit "I UNDERSTAND" gate when groups contain extra devices.
+- **GPU‑in‑use detection** that checks both:
+  - DRM card usage (via `/dev/dri/card*` and optional `lsof`).
+  - Boot VGA framebuffer traps (efifb/simplefb/vesafb via `/proc/iomem`).
+- **Optional automatic framebuffer fixes** by queuing `video=...:off` parameters for GRUB.
+- **Audio‑in‑use inspection** for HDMI audio: maps the guest GPU’s HDMI audio PCI function to ALSA card(s), then uses `fuser` to detect if `/dev/snd/pcmC*D*` is in active use before binding.
+- **Driver sanity** – host audio must not be on `vfio-pci`; guest devices must be.
+- **Explicit confirmation phrases** for destructive or high‑risk actions (unsafe groups, in‑use devices, resets).
+- **`--dry-run` everywhere** – any operational mode (verify/detect/self‑test/reset) can be run without writing.
 
 Nevertheless, GPU passthrough **always carries risk**. Make sure you have:
 
@@ -413,6 +474,8 @@ Nevertheless, GPU passthrough **always carries risk**. Make sure you have:
 ---
 
 ## Known limitations
+
+Despite all these protections, **VFIO passthrough remains an advanced configuration**. Some limitations are intentional design choices to keep the script focused and safe.
 
 - Requires **at least two GPUs**; single‑GPU passthrough scenarios are explicitly not supported by this helper.
 - Assumes a `systemd` environment.
