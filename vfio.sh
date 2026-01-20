@@ -1293,18 +1293,33 @@ remove_param_all() {
 }
 
 detect_bootloader() {
+  # 1) Classic GRUB with /etc/default/grub present (most distros)
   if [[ -f /etc/default/grub ]]; then
     echo "grub"
     return 0
   fi
-  if [[ -d /boot/loader/entries || -d /efi/loader/entries ]]; then
+
+  # 2) GRUB installed but /etc/default/grub missing or managed differently
+  #    (for example some openSUSE setups). Presence of /boot/grub* is a
+  #    strong indicator that GRUB is the bootloader, even if we cannot
+  #    safely auto-edit its configuration.
+  if [[ -d /boot/grub || -d /boot/grub2 ]]; then
+    echo "grub"
+    return 0
+  fi
+
+  # 3) systemd-boot style layout
+  if [[ -d /boot/loader/entries || -d /efi/loader/entries || -d /boot/efi/loader/entries ]]; then
     echo "systemd-boot"
     return 0
   fi
-  if [[ -f /boot/refind_linux.conf || -f /efi/EFI/refind/refind.conf ]]; then
+
+  # 4) rEFInd
+  if [[ -f /boot/refind_linux.conf || -f /efi/EFI/refind/refind.conf || -f /boot/efi/EFI/refind/refind.conf ]]; then
     echo "refind"
     return 0
   fi
+
   echo "unknown"
 }
 
