@@ -423,6 +423,28 @@ check_secure_boot() {
   fi
 }
 
+iommu_enabled_or_die() {
+  # Best-effort check that IOMMU groups exist on this boot.
+  # This requires both firmware support (VT-d / AMD-Vi) and
+  # correct kernel parameters (intel_iommu=on or amd_iommu=on).
+  if [[ -d /sys/kernel/iommu_groups ]]; then
+    local d
+    for d in /sys/kernel/iommu_groups/*; do
+      if [[ -d "$d" ]]; then
+        # At least one group directory exists → IOMMU active.
+        return 0
+      fi
+    done
+  fi
+
+  say
+  hdr "IOMMU required for GPU passthrough"
+  note "No active IOMMU groups were detected under /sys/kernel/iommu_groups."
+  note "This usually means VT-d (Intel) or IOMMU/AMD-Vi (AMD) is disabled in firmware, or kernel parameters are missing."
+  note "Enable IOMMU in BIOS/UEFI and ensure kernel parameters like 'intel_iommu=on iommu=pt' or 'amd_iommu=on iommu=pt' are set."
+  die "IOMMU must be enabled before running this VFIO GPU passthrough setup."
+}
+
 vfio_config_health() {
   # Prints:
   #   STATUS=OK|BAD|WARN
@@ -2104,6 +2126,9 @@ main() {
 
   require_root
   require_systemd
+
+  # For install mode, require IOMMU to be active before continuing.
+  iommu_enabled_or_die
 
   # Clearly describe supported environment up front.
   local bl
