@@ -26,6 +26,7 @@ AUDIO_SCRIPT="/usr/local/bin/vfio-set-host-audio.sh"
 SYSTEMD_UNIT="/etc/systemd/system/vfio-bind-selected-gpu.service"
 MODULES_LOAD="/etc/modules-load.d/vfio.conf"
 BLACKLIST_FILE="/etc/modprobe.d/vfio-optional-blacklist.conf"
+DRACUT_VFIO_CONF="/etc/dracut.conf.d/10-vfio.conf"
 
 DEBUG=0
 DRY_RUN=0
@@ -1110,7 +1111,7 @@ install_dracut_config() {
   # Only applies on dracut-based systems.
   [[ -d /etc/dracut.conf.d ]] || return 0
 
-  local file="/etc/dracut.conf.d/10-vfio.conf"
+  local file="$DRACUT_VFIO_CONF"
   backup_file "$file"
 
   # Reuse the same VFIO module list and turn it into a single space-separated string.
@@ -1835,6 +1836,7 @@ generate_rollback_script() {
     "$AUDIO_SCRIPT"
     "$SYSTEMD_UNIT"
     "$CONF_FILE"
+    "$DRACUT_VFIO_CONF"
   )
 
   local p bak
@@ -1979,7 +1981,7 @@ reset_vfio_all() {
   fi
 
   # Remove managed files
-  run rm -f "$SYSTEMD_UNIT" "$BIND_SCRIPT" "$AUDIO_SCRIPT" "$CONF_FILE" "$MODULES_LOAD" "$BLACKLIST_FILE" 2>/dev/null || true
+  run rm -f "$SYSTEMD_UNIT" "$BIND_SCRIPT" "$AUDIO_SCRIPT" "$CONF_FILE" "$MODULES_LOAD" "$BLACKLIST_FILE" "$DRACUT_VFIO_CONF" 2>/dev/null || true
 
   # Remove user unit for SUDO_USER (and optionally all /home users)
   if [[ -n "${SUDO_USER:-}" ]]; then
