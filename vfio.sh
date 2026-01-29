@@ -1433,8 +1433,11 @@ maybe_update_initramfs() {
   fi
 
   if command -v dracut >/dev/null 2>&1; then
-    say "Updating initramfs via dracut -f ..."
-    run dracut -f
+    say "Updating initramfs via dracut (no --force; will refuse to overwrite on error) ..."
+    if ! run dracut; then
+      note "dracut failed or refused to overwrite an existing initramfs."
+      note "Your previous initramfs is still on disk. Review the dracut error above and rerun dracut manually (for example: dracut --force) once you are satisfied."
+    fi
     return 0
   fi
 
@@ -1883,7 +1886,7 @@ if command -v update-initramfs >/dev/null 2>&1 && [ -d /etc/initramfs-tools ]; t
 elif command -v mkinitcpio >/dev/null 2>&1; then
   mkinitcpio -P || true
 elif command -v dracut >/dev/null 2>&1; then
-  dracut -f || true
+  dracut || true
 fi
 
 echo "Rollback finished. Reboot recommended."
@@ -2427,7 +2430,16 @@ main() {
 
   write_conf "$host_gpu" "$host_audio_bdfs_csv" "$host_audio_node_name" "$guest_gpu" "$guest_audio_csv" "$guest_vendor"
   install_vfio_modules_load
-  install_dracut_config
+
+  say
+  hdr "Initramfs integration (optional)"
+  note "By default, VFIO modules will load from the root filesystem via $MODULES_LOAD after it is mounted."
+  note "You can also pre-load them in the initramfs via dracut config; this is more invasive and can affect very early boot."
+  if prompt_yn "Install dracut config to include VFIO modules in the initramfs now? (advanced)" N; then
+    install_dracut_config
+  else
+    note "Skipping dracut VFIO initramfs config. You can add it later by re-running this helper."
+  fi
 
   say
   hdr "Module load ordering (optional soft dependency)"
