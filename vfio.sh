@@ -2854,6 +2854,37 @@ apply_configuration() {
     note "Skipping automatic/manual IOMMU helper. Ensure your kernel parameters enable IOMMU, or passthrough may fail."
   fi
 
+  # Even if systemd-boot is the active loader, many openSUSE systems keep
+  # GRUB installed as a fallback. As a final step, if GRUB tooling and
+  # config are present, regenerate grub.cfg so any previous cmdline edits
+  # (whether made by this script or manually) are reflected.
+  if [[ -f /etc/default/grub ]]; then
+    if command -v update-grub >/dev/null 2>&1; then
+      say "(Post-install) Updating GRUB config via update-grub..."
+      run update-grub || true
+    elif command -v grub-mkconfig >/dev/null 2>&1; then
+      local out
+      if [[ -d /boot/grub ]]; then
+        out=/boot/grub/grub.cfg
+      elif [[ -d /boot/grub2 ]]; then
+        out=/boot/grub2/grub.cfg
+      else
+        out=""
+      fi
+      [[ -n "$out" ]] && { say "(Post-install) Updating GRUB config via grub-mkconfig -o $out ..."; run grub-mkconfig -o "$out" || true; }
+    elif command -v grub2-mkconfig >/dev/null 2>&1; then
+      local out
+      if [[ -d /boot/grub2 ]]; then
+        out=/boot/grub2/grub.cfg
+      elif [[ -d /boot/grub ]]; then
+        out=/boot/grub/grub.cfg
+      else
+        out=""
+      fi
+      [[ -n "$out" ]] && { say "(Post-install) Updating GRUB config via grub2-mkconfig -o $out ..."; run grub2-mkconfig -o "$out" || true; }
+    fi
+  fi
+
   # Optional driver blacklisting
   say
   hdr "Optional: driver blacklisting (advanced)"
