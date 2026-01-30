@@ -1306,28 +1306,38 @@ remove_param_all() {
 }
 
 detect_bootloader() {
-  # 1) Classic GRUB with /etc/default/grub present (most distros)
+  # 1) Check if systemd-boot is the ACTIVE bootloader (via bootctl)
+  # This fixes setups (like openSUSE) where /etc/default/grub exists but isn't used.
+  if command -v bootctl >/dev/null 2>&1; then
+    # bootctl status prints "Product: systemd-boot" if active
+    if bootctl status 2>/dev/null | grep -qi "systemd-boot"; then
+      echo "systemd-boot"
+      return 0
+    fi
+  fi
+
+  # 2) Fallback: Check for systemd-boot config directories directly
+  if [[ -d /boot/loader/entries || -d /efi/loader/entries || -d /boot/efi/loader/entries ]]; then
+    # If standard grub dirs are missing, it's definitely systemd-boot
+    if [[ ! -d /boot/grub && ! -d /boot/grub2 ]]; then
+      echo "systemd-boot"
+      return 0
+    fi
+  fi
+  
+  # 3) Classic GRUB with /etc/default/grub present (most distros)
   if [[ -f /etc/default/grub ]]; then
     echo "grub"
     return 0
   fi
 
-  # 2) GRUB installed but /etc/default/grub missing or managed differently
-  #    (for example some openSUSE setups). Presence of /boot/grub* is a
-  #    strong indicator that GRUB is the bootloader, even if we cannot
-  #    safely auto-edit its configuration.
+  # 4) GRUB installed but config missing
   if [[ -d /boot/grub || -d /boot/grub2 ]]; then
     echo "grub"
     return 0
   fi
 
-  # 3) systemd-boot style layout
-  if [[ -d /boot/loader/entries || -d /efi/loader/entries || -d /boot/efi/loader/entries ]]; then
-    echo "systemd-boot"
-    return 0
-  fi
-
-  # 4) rEFInd
+  # 5) rEFInd
   if [[ -f /boot/refind_linux.conf || -f /efi/EFI/refind/refind.conf || -f /boot/efi/EFI/refind/refind.conf ]]; then
     echo "refind"
     return 0
@@ -1395,6 +1405,44 @@ systemd_boot_add_kernel_params() {
     return 0
   fi
 
+  # --- openSUSE / sdbootutil persistence layer ---
+  # openSUSE uses /etc/kernel/cmdline to generate entries on update.
+  # We must edit this file to ensure settings survive a kernel upgrade.
+  if [[ -f /etc/kernel/cmdline ]]; then
+    hdr "openSUSE Persistence Check"
+    note "Detected /etc/kernel/cmdline. This is used by openSUSE to generate boot entries."
+    
+    local cmdline_content
+    cmdline_content="$(cat /etc/kernel/cmdline)"
+    local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt" ${GRUB_EXTRA_PARAMS:-})
+    local new_cmdline="$cmdline_content"
+    
+    local p
+    for p in "${params_to_add[@]}"; do
+      new_cmdline="$(add_param_once "$new_cmdline" "$p")"
+    done
+    
+    # ACS Override check for cmdline file
+    if prompt_yn "Enable ACS override in /etc/kernel/cmdline (persistence)?" N; then
+      new_cmdline="$(add_param_once "$new_cmdline" "pcie_acs_override=downstream,multifunction")"
+    fi
+
+    if [[ "$(trim "$new_cmdline")" != "$(trim "$cmdline_content")" ]]; then
+      backup_file "/etc/kernel/cmdline"
+      if (( DRY_RUN )); then
+        : # do nothing in dry-run
+      else
+        printf '%s
+' "$new_cmdline" > /etc/kernel/cmdline
+      fi
+      say "Updated /etc/kernel/cmdline for persistence."
+    else
+      say "/etc/kernel/cmdline already contains VFIO/IOMMU params."
+    fi
+  fi
+  # -----------------------------------------------
+
+  # Continue with standard logic to update the CURRENT entry immediately
   local -a entries=()
   local f
   shopt -s nullglob
@@ -1420,8 +1468,8 @@ systemd_boot_add_kernel_params() {
     opts_list+=("$title"$'\n'"  file: $(basename "$f")"$'\n'"  options: $current_opts")
   done
 
-  hdr "systemd-boot kernel parameters"
-  note "This will edit the selected systemd-boot entry in-place to add IOMMU/VFIO-related kernel parameters."
+  hdr "Current Boot Entry Update"
+  note "This will edit the selected systemd-boot entry in-place for the CURRENT kernel."
 
   local idx
   idx="$(select_from_list "Select the systemd-boot entry to modify:" "${opts_list[@]}")"
@@ -1432,40 +1480,14 @@ systemd_boot_add_kernel_params() {
 
   local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt" ${GRUB_EXTRA_PARAMS:-})
   local new_opts="$current_opts"
-  local p
   for p in "${params_to_add[@]}"; do
     new_opts="$(add_param_once "$new_opts" "$p")"
   done
-
+  
   say
   hdr "Advanced (optional): ACS override (systemd-boot)"
-  note "ACS override can sometimes split up IOMMU groups on motherboards that don't expose proper isolation."
-  note "This may help GPU passthrough if your guest GPU shares an IOMMU group with other devices."
-  note "Downsides: weaker PCIe isolation/security and possible instability."
-  note "Recommended: NO unless you know you need it."
   if prompt_yn "Enable ACS override (pcie_acs_override=downstream,multifunction) in this entry?" N; then
     new_opts="$(add_param_once "$new_opts" "pcie_acs_override=downstream,multifunction")"
-  fi
-
-  say
-  hdr "Boot verbosity (optional, systemd-boot)"
-  note "While you are testing VFIO passthrough it is often useful to see full boot logs instead of a silent splash screen."
-  note "This option will remove 'quiet' and 'splash=silent' and add 'systemd.show_status=1 loglevel=7'."
-  if prompt_yn "Disable boot splash / quiet and enable detailed text logs on boot?" Y; then
-    new_opts="$(remove_param_all "$new_opts" "quiet")"
-    new_opts="$(remove_param_all "$new_opts" "splash=silent")"
-    new_opts="$(add_param_once "$new_opts" "systemd.show_status=1")"
-    new_opts="$(add_param_once "$new_opts" "loglevel=7")"
-  fi
-
-  if command -v dracut >/dev/null 2>&1; then
-    say
-    hdr "Advanced (optional): rd.driver.pre=vfio-pci (dracut, systemd-boot)"
-    note "On dracut-based systems this can help vfio-pci bind the guest GPU before display drivers inside the initramfs."
-    note "Only enable this if you understand the implications and have a rollback/snapshot available."
-    if prompt_yn "Add rd.driver.pre=vfio-pci to the kernel cmdline for this entry?" N; then
-      new_opts="$(add_param_once "$new_opts" "rd.driver.pre=vfio-pci")"
-    fi
   fi
 
   if [[ "$(trim "$new_opts")" == "$(trim "$current_opts")" ]]; then
