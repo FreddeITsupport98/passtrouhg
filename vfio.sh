@@ -1472,6 +1472,9 @@ systemd_boot_write_options() {
 
 systemd_boot_add_kernel_params() {
   local dir
+  # Track whether the user chose verbose boot so we can apply it both to
+  # /etc/kernel/cmdline (persistence) and the current boot entry options.
+  local verbose_persist=0
   dir="$(systemd_boot_entries_dir 2>/dev/null || true)"
   if [[ -z "$dir" ]]; then
     note "systemd-boot detected but no loader entries directory could be found."
@@ -1495,6 +1498,21 @@ systemd_boot_add_kernel_params() {
     for p in "${params_to_add[@]}"; do
       new_cmdline="$(add_param_once "$new_cmdline" "$p")"
     done
+    
+    # Optional: disable quiet/splash and show verbose boot logs while
+    # testing VFIO, just like we do for GRUB. This affects all future
+    # entries generated from /etc/kernel/cmdline.
+    say
+    hdr "Boot verbosity (persistence)"
+    note "While you are testing VFIO passthrough it is often useful to see full boot logs instead of a silent splash screen."
+    note "This option will remove 'quiet' and 'splash=silent' from the kernel cmdline and add 'systemd.show_status=1 loglevel=7'."
+    if prompt_yn "Disable boot splash / quiet and enable detailed text logs on boot?" Y "Boot verbosity (persistence)"; then
+      new_cmdline="$(remove_param_all "$new_cmdline" "quiet")"
+      new_cmdline="$(remove_param_all "$new_cmdline" "splash=silent")"
+      new_cmdline="$(add_param_once "$new_cmdline" "systemd.show_status=1")"
+      new_cmdline="$(add_param_once "$new_cmdline" "loglevel=7")"
+      verbose_persist=1
+    fi
     
     # ACS Override check for cmdline file
     if prompt_yn "Enable ACS override in /etc/kernel/cmdline (persistence)?" N "Boot options (persistence)"; then
@@ -1600,6 +1618,15 @@ systemd_boot_add_kernel_params() {
   for p in "${params_to_add[@]}"; do
     new_opts="$(add_param_once "$new_opts" "$p")"
   done
+  
+  # If the user chose verbose boot in the persistence step, mirror that
+  # here so the CURRENT entry immediately shows logs instead of splash.
+  if (( verbose_persist )); then
+    new_opts="$(remove_param_all "$new_opts" "quiet")"
+    new_opts="$(remove_param_all "$new_opts" "splash=silent")"
+    new_opts="$(add_param_once "$new_opts" "systemd.show_status=1")"
+    new_opts="$(add_param_once "$new_opts" "loglevel=7")"
+  fi
   
   say
   hdr "Advanced (optional): ACS override (systemd-boot)"
