@@ -1336,15 +1336,156 @@ detect_bootloader() {
   echo "unknown"
 }
 
+# Locate the systemd-boot entries directory (if any).
+systemd_boot_entries_dir() {
+  local d
+  for d in /boot/efi/loader/entries /boot/loader/entries /efi/loader/entries; do
+    if [[ -d "$d" ]]; then
+      echo "$d"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Safely rewrite the options line for a single systemd-boot entry.
+systemd_boot_write_options() {
+  local entry="$1" new_opts="$2"
+  [[ -f "$entry" ]] || die "systemd-boot entry not found: $entry"
+
+  backup_file "$entry"
+
+  # Preserve original mode/owner/group.
+  local mode owner group
+  mode="$(stat -c '%a' "$entry")"
+  owner="$(stat -c '%u' "$entry")"
+  group="$(stat -c '%g' "$entry")"
+
+  local tmp
+  tmp="$(mktemp)"
+  local done=0 line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if (( ! done )) && [[ "$line" =~ ^options[[:space:]]+ ]]; then
+      printf 'options %s\n' "$(trim "$new_opts")" >>"$tmp"
+      done=1
+    else
+      printf '%s\n' "$line" >>"$tmp"
+    fi
+  done <"$entry"
+
+  if (( ! done )); then
+    printf 'options %s\n' "$(trim "$new_opts")" >>"$tmp"
+  fi
+
+  if (( DRY_RUN )); then
+    rm -f "$tmp" || true
+    return 0
+  fi
+
+  install -o "$owner" -g "$group" -m "$mode" "$tmp" "$entry"
+  rm -f "$tmp" || true
+}
+
+systemd_boot_add_kernel_params() {
+  local dir
+  dir="$(systemd_boot_entries_dir 2>/dev/null || true)"
+  if [[ -z "$dir" ]]; then
+    note "systemd-boot detected but no loader entries directory could be found."
+    print_manual_iommu_instructions
+    return 0
+  fi
+
+  local -a entries=()
+  local f
+  shopt -s nullglob
+  for f in "$dir"/*.conf; do
+    entries+=("$f")
+  done
+  shopt -u nullglob
+
+  if (( ${#entries[@]} == 0 )); then
+    note "No systemd-boot entry files (*.conf) found under $dir."
+    print_manual_iommu_instructions
+    return 0
+  fi
+
+  local -a opts_list=()
+  local i title current_opts
+  for i in "${!entries[@]}"; do
+    f="${entries[$i]}"
+    title="$(grep -m1 -E '^title[[:space:]]+' "$f" 2>/dev/null | sed -E 's/^title[[:space:]]+//')"
+    title="${title:-$(basename "$f")}"
+    current_opts="$(grep -m1 -E '^options[[:space:]]+' "$f" 2>/dev/null | sed -E 's/^options[[:space:]]+//')"
+    current_opts="$(trim "${current_opts:-<none>}")"
+    opts_list+=("$title"$'\n'"  file: $(basename "$f")"$'\n'"  options: $current_opts")
+  done
+
+  hdr "systemd-boot kernel parameters"
+  note "This will edit the selected systemd-boot entry in-place to add IOMMU/VFIO-related kernel parameters."
+
+  local idx
+  idx="$(select_from_list "Select the systemd-boot entry to modify:" "${opts_list[@]}")"
+  local entry_path="${entries[$idx]}"
+
+  current_opts="$(grep -m1 -E '^options[[:space:]]+' "$entry_path" 2>/dev/null | sed -E 's/^options[[:space:]]+//')"
+  current_opts="$(trim "${current_opts:-}")"
+
+  local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt" ${GRUB_EXTRA_PARAMS:-})
+  local new_opts="$current_opts"
+  local p
+  for p in "${params_to_add[@]}"; do
+    new_opts="$(add_param_once "$new_opts" "$p")"
+  done
+
+  say
+  hdr "Advanced (optional): ACS override (systemd-boot)"
+  note "ACS override can sometimes split up IOMMU groups on motherboards that don't expose proper isolation."
+  note "This may help GPU passthrough if your guest GPU shares an IOMMU group with other devices."
+  note "Downsides: weaker PCIe isolation/security and possible instability."
+  note "Recommended: NO unless you know you need it."
+  if prompt_yn "Enable ACS override (pcie_acs_override=downstream,multifunction) in this entry?" N; then
+    new_opts="$(add_param_once "$new_opts" "pcie_acs_override=downstream,multifunction")"
+  fi
+
+  say
+  hdr "Boot verbosity (optional, systemd-boot)"
+  note "While you are testing VFIO passthrough it is often useful to see full boot logs instead of a silent splash screen."
+  note "This option will remove 'quiet' and 'splash=silent' and add 'systemd.show_status=1 loglevel=7'."
+  if prompt_yn "Disable boot splash / quiet and enable detailed text logs on boot?" Y; then
+    new_opts="$(remove_param_all "$new_opts" "quiet")"
+    new_opts="$(remove_param_all "$new_opts" "splash=silent")"
+    new_opts="$(add_param_once "$new_opts" "systemd.show_status=1")"
+    new_opts="$(add_param_once "$new_opts" "loglevel=7")"
+  fi
+
+  if command -v dracut >/dev/null 2>&1; then
+    say
+    hdr "Advanced (optional): rd.driver.pre=vfio-pci (dracut, systemd-boot)"
+    note "On dracut-based systems this can help vfio-pci bind the guest GPU before display drivers inside the initramfs."
+    note "Only enable this if you understand the implications and have a rollback/snapshot available."
+    if prompt_yn "Add rd.driver.pre=vfio-pci to the kernel cmdline for this entry?" N; then
+      new_opts="$(add_param_once "$new_opts" "rd.driver.pre=vfio-pci")"
+    fi
+  fi
+
+  if [[ "$(trim "$new_opts")" == "$(trim "$current_opts")" ]]; then
+    say "systemd-boot entry options unchanged (params already present)."
+    return 0
+  fi
+
+  systemd_boot_write_options "$entry_path" "$new_opts"
+  say "Updated systemd-boot entry: $entry_path"
+}
+
 print_manual_iommu_instructions() {
   local param bl
   param="$(cpu_iommu_param)"
   bl="$(detect_bootloader)"
-  if [[ "$bl" != "grub" ]]; then
+  if [[ "$bl" != "grub" && "$bl" != "systemd-boot" ]]; then
     say "Detected boot loader: $bl"
   fi
-  say "Automatic kernel parameter editing is ONLY implemented for GRUB on systemd-based systems."
-  say "Other boot loaders (for example rEFInd, systemd-boot, custom UEFI stubs, etc.) are NOT supported by this script."
+  say "Automatic kernel parameter editing is implemented for GRUB and systemd-boot on systemd-based systems."
+  say "Other boot loaders (for example rEFInd or custom UEFI stubs) are NOT auto-edited by this script."
   say "If you use one of those, you must edit your kernel parameters manually. Add these parameters and then reboot:"
   say "  $param iommu=pt"
   say "Advanced (usually NOT recommended): pcie_acs_override=downstream,multifunction"
@@ -2160,6 +2301,7 @@ main() {
   need_cmd grep
   need_cmd install
   need_cmd mktemp
+  need_cmd stat
   # Optional but improves UX for PipeWire enumeration under sudo
   have_cmd runuser || true
 
@@ -2198,10 +2340,10 @@ main() {
   hdr "Environment support"
   note "Init system: systemd (required; other init systems are NOT supported by this helper)."
   note "Boot loader detected: ${bl}"
-  if [[ "$bl" == "grub" ]]; then
-    note "Automatic kernel parameter editing is available for GRUB."
+  if [[ "$bl" == "grub" || "$bl" == "systemd-boot" ]]; then
+    note "Automatic kernel parameter editing is available for ${bl}."
   else
-    note "Automatic kernel parameter editing is ONLY implemented for GRUB. For ${bl}, you must apply kernel parameters manually when prompted."
+    note "Automatic kernel parameter editing is ONLY implemented for GRUB and systemd-boot. For ${bl}, you must apply kernel parameters manually when prompted."
   fi
 
   # Early detection of existing passthrough config (before user makes changes).
@@ -2497,8 +2639,11 @@ main() {
   if [[ "$bl2" == "grub" ]]; then
     note "Recommended: YES (adds amd_iommu=on or intel_iommu=on + iommu=pt to GRUB)."
     note "If you answer NO, passthrough may fail unless you already configured IOMMU another way."
+  elif [[ "$bl2" == "systemd-boot" ]]; then
+    note "Recommended: YES (adds amd_iommu=on or intel_iommu=on + iommu=pt to the selected systemd-boot entry)."
+    note "If you answer NO, passthrough may fail unless you already configured IOMMU another way."
   else
-    note "Automatic kernel parameter editing is ONLY supported for GRUB. For ${bl2}, you must add the parameters manually."
+    note "Automatic kernel parameter editing is ONLY supported for GRUB and systemd-boot. For ${bl2}, you must add the parameters manually."
     note "If you skip the manual instructions, passthrough may fail."
   fi
   note "If you enable IOMMU, you will also be offered an optional 'ACS override' (advanced; usually NO)."
@@ -2506,6 +2651,8 @@ main() {
   local q
   if [[ "$bl2" == "grub" ]]; then
     q="Enable IOMMU kernel parameters in GRUB now? (recommended)"
+  elif [[ "$bl2" == "systemd-boot" ]]; then
+    q="Enable IOMMU kernel parameters in a systemd-boot entry now? (recommended)"
   else
     q="Show recommended IOMMU kernel parameters and MANUAL instructions now? (recommended)"
   fi
@@ -2513,6 +2660,8 @@ main() {
   if prompt_yn "$q" Y; then
     if [[ "$bl2" == "grub" ]]; then
       grub_add_kernel_params
+    elif [[ "$bl2" == "systemd-boot" ]]; then
+      systemd_boot_add_kernel_params
     else
       print_manual_iommu_instructions
     fi
