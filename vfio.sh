@@ -33,6 +33,20 @@ DRY_RUN=0
 MODE="install"   # install | verify
 RUN_TS="$(date +%Y%m%d-%H%M%S)"
 
+# Global context structure used to separate detection, user selection and
+# application logic. Keys are documented near detect_system/user_selection.
+# Example keys:
+#   CTX[bootloader]           - detected bootloader (grub/systemd-boot/...) 
+#   CTX[guest_gpu]            - selected guest GPU BDF
+#   CTX[host_gpu]             - selected host GPU BDF
+#   CTX[guest_audio_csv]      - CSV of guest audio BDFs
+#   CTX[host_audio_bdfs_csv]  - CSV of host audio BDFs
+#   CTX[host_audio_node_name] - PipeWire node name for host default sink
+#   CTX[guest_vendor]         - guest GPU vendor ID (e.g. 1002)
+#
+# This keeps the wizard's state explicit and makes it easier to extend.
+declare -Ag CTX=()
+
 # Color output (ANSI). Set NO_COLOR=1 to disable.
 ENABLE_COLOR=1
 if [[ -n "${NO_COLOR:-}" ]]; then
@@ -2409,64 +2423,28 @@ preflight_existing_config_gate() {
   fi
 }
 
-main() {
-  parse_args "$@"
-
-  need_cmd lspci
-  need_cmd modprobe
-  need_cmd sed
-  need_cmd awk
-  need_cmd grep
-  need_cmd install
-  need_cmd mktemp
-  need_cmd stat
-  # Optional but improves UX for PipeWire enumeration under sudo
-  have_cmd runuser || true
-
-  if [[ "$MODE" == "verify" ]]; then
-    verify_setup
-    exit $?
-  fi
-
-  if [[ "$MODE" == "detect" ]]; then
-    detect_existing_vfio_report
-    exit 0
-  fi
-
-  if [[ "$MODE" == "self-test" ]]; then
-    self_test
-    exit $?
-  fi
-
-  if [[ "$MODE" == "reset" ]]; then
-    require_root
-    require_systemd
-    reset_vfio_all
-    exit 0
-  fi
-
-  require_root
-  require_systemd
+detect_system() {
+  # Detect and record core environment capabilities into CTX.
+  CTX[bootloader]="$(detect_bootloader)"
 
   # For install mode, require IOMMU to be active before continuing.
   iommu_enabled_or_die
 
-  # Clearly describe supported environment up front.
-  local bl
-  bl="$(detect_bootloader)"
   say
   hdr "Environment support"
   note "Init system: systemd (required; other init systems are NOT supported by this helper)."
-  note "Boot loader detected: ${bl}"
-  if [[ "$bl" == "grub" || "$bl" == "systemd-boot" ]]; then
-    note "Automatic kernel parameter editing is available for ${bl}."
+  note "Boot loader detected: ${CTX[bootloader]}"
+  if [[ "${CTX[bootloader]}" == "grub" || "${CTX[bootloader]}" == "systemd-boot" ]]; then
+    note "Automatic kernel parameter editing is available for ${CTX[bootloader]}."
   else
-    note "Automatic kernel parameter editing is ONLY implemented for GRUB and systemd-boot. For ${bl}, you must apply kernel parameters manually when prompted."
+    note "Automatic kernel parameter editing is ONLY implemented for GRUB and systemd-boot. For ${CTX[bootloader]}, you must apply kernel parameters manually when prompted."
   fi
 
   # Early detection of existing passthrough config (before user makes changes).
   preflight_existing_config_gate
+}
 
+user_selection() {
   say
   hdr "VFIO GPU Passthrough Setup (multi-vendor)"
   note "This wizard will ask you to choose: (1) Guest GPU to passthrough, (2) Host audio device to KEEP on the host."
@@ -2503,14 +2481,12 @@ main() {
   local -a options=()
   local i
   for i in "${!gpu_bdfs[@]}"; do
-    local bdf slot audio_csv vend short
+    local bdf slot vend short
     bdf="${gpu_bdfs[$i]}"
     slot="$(pci_slot_of_bdf "$bdf")"
-    audio_csv="${gpu_audio_bdfs_csv[$i]}"
     vend="$(vendor_label "${gpu_vendor_ids[$i]}")"
     short="$(short_gpu_desc "${gpu_descs[$i]}")"
-
-    options+=("GPU: $bdf  |  Vendor: ${vend}"$'\n'"      Model: ${short}"$'\n'"      PCI slot: ${slot}  |  Slot audio: ${audio_csv:-<none>}")
+    options+=("GPU: $bdf  |  Vendor: ${vend}"$'\n'"      Model: ${short}"$'\n'"      PCI slot: ${slot}")
   done
 
   local guest_idx host_idx
@@ -2524,32 +2500,33 @@ main() {
     (( host_idx != guest_idx )) || die "Host GPU and guest GPU cannot be the same."
   fi
 
-  local guest_gpu host_gpu guest_vendor guest_desc host_desc
-  guest_gpu="${gpu_bdfs[$guest_idx]}"
-  host_gpu="${gpu_bdfs[$host_idx]}"
-  guest_vendor="${gpu_vendor_ids[$guest_idx]}"
+  CTX[guest_gpu]="${gpu_bdfs[$guest_idx]}"
+  CTX[host_gpu]="${gpu_bdfs[$host_idx]}"
+  CTX[guest_vendor]="${gpu_vendor_ids[$guest_idx]}"
+
+  local guest_desc host_desc
   guest_desc="${gpu_descs[$guest_idx]}"
   host_desc="${gpu_descs[$host_idx]}"
 
   say
   hdr "Selection summary so far"
   say "Host GPU (stays on host):"
-  say "  $host_gpu"
+  say "  ${CTX[host_gpu]}"
   note "  $(short_gpu_desc "$host_desc")"
   say "Guest GPU (passthrough / vfio-pci):"
-  say "  $guest_gpu"
+  say "  ${CTX[guest_gpu]}"
   note "  $(short_gpu_desc "$guest_desc")"
 
-  assert_not_equal "$guest_gpu" "$host_gpu" "Host GPU and guest GPU are the same (refusing)."
-  assert_pci_bdf_exists "$guest_gpu"
-  assert_pci_bdf_exists "$host_gpu"
+  assert_not_equal "${CTX[guest_gpu]}" "${CTX[host_gpu]}" "Host GPU and guest GPU are the same (refusing)."
+  assert_pci_bdf_exists "${CTX[guest_gpu]}"
+  assert_pci_bdf_exists "${CTX[host_gpu]}"
 
   # Guest audio selection (default: audio functions in the same PCI slot)
   local guest_audio_csv="${gpu_audio_bdfs_csv[$guest_idx]}"
   if [[ -n "$guest_audio_csv" ]]; then
     say
     hdr "Step 2/4: Guest GPU HDMI/DP Audio (optional)"
-    say "Guest GPU: $guest_gpu"
+    say "Guest GPU: ${CTX[guest_gpu]}"
     note "$(short_gpu_desc "$guest_desc")"
     say "Detected HDMI/DP audio PCI function(s) for this GPU: $guest_audio_csv"
     note "Choose YES if you want HDMI/DP audio output from the VM using the guest GPU."
@@ -2559,17 +2536,17 @@ main() {
   else
     say
     hdr "Step 2/4: Guest GPU HDMI/DP Audio"
-    note "No HDMI/DP audio device found in the same PCI slot as the selected guest GPU ($guest_gpu)."
+    note "No HDMI/DP audio device found in the same PCI slot as the selected guest GPU (${CTX[guest_gpu]})."
   fi
 
   # Preflight: detect if the selected guest GPU looks in-use by the host.
-  gpu_in_use_preflight "$guest_gpu"
+  gpu_in_use_preflight "${CTX[guest_gpu]}"
 
   # Preflight: IOMMU group gate.
-  iommu_group_preflight "$guest_gpu" "$guest_audio_csv"
+  iommu_group_preflight "${CTX[guest_gpu]}" "$guest_audio_csv"
 
   # Check for AMD Reset Bug mitigation (vendor-reset)
-  if [[ "${guest_vendor,,}" == "1002" ]]; then
+  if [[ "${CTX[guest_vendor],,}" == "1002" ]]; then
     say
     hdr "AMD Reset Bug Check"
     if [[ -d /sys/module/vendor_reset ]]; then
@@ -2592,14 +2569,14 @@ main() {
 
   say
   hdr "Step 3/4: Select HOST audio device (must stay on host)"
-  say "Host GPU is: $host_gpu"
+  say "Host GPU is: ${CTX[host_gpu]}"
   note "$(short_gpu_desc "$host_desc")"
   note "Pick the AUDIO device that should KEEP working on the host (for your desktop sound)."
   note "Tip: for HDMI sound from the host GPU, pick the audio device in the SAME PCI slot as the host GPU."
   note "This avoids the common AMD issue where both HDMI audio devices share the same ID (1002:ab28)."
 
   local host_slot
-  host_slot="$(pci_slot_of_bdf "$host_gpu")"
+  host_slot="$(pci_slot_of_bdf "${CTX[host_gpu]}")"
 
   local -a aud_opts=() aud_bdfs=()
   local abdf adesc avendor adev
@@ -2631,11 +2608,11 @@ main() {
 
   # Hard safety: host audio must never equal guest GPU.
   if [[ -n "$host_audio_bdfs_csv" ]]; then
-    assert_not_equal "$host_audio_bdfs_csv" "$guest_gpu" "Selected host audio equals guest GPU BDF (refusing)."
+    assert_not_equal "$host_audio_bdfs_csv" "${CTX[guest_gpu]}" "Selected host audio equals guest GPU BDF (refusing)."
   fi
 
   # Slot sanity: host audio should match host GPU slot unless explicitly overridden.
-  audio_slot_sanity "$host_gpu" "$host_audio_bdfs_csv"
+  audio_slot_sanity "${CTX[host_gpu]}" "$host_audio_bdfs_csv"
 
   # PipeWire default sink selection (user-session)
   local host_audio_node_name=""
@@ -2672,7 +2649,7 @@ main() {
         sink_opts+=("$sname  ::  $slabel")
       done < <(pipewire_sinks_discover || true)
 
-    if (( ${#sink_node_names[@]} > 0 )); then
+      if (( ${#sink_node_names[@]} > 0 )); then
         local sink_idx
         hdr "Step 4/4: Choose default HOST audio output (PipeWire)"
         note "This only sets your desktop's default sound output after login."
@@ -2684,6 +2661,19 @@ main() {
       fi
     fi
   fi
+
+  CTX[guest_audio_csv]="$guest_audio_csv"
+  CTX[host_audio_bdfs_csv]="$host_audio_bdfs_csv"
+  CTX[host_audio_node_name]="$host_audio_node_name"
+}
+
+apply_configuration() {
+  local guest_gpu="${CTX[guest_gpu]}"
+  local host_gpu="${CTX[host_gpu]}"
+  local guest_vendor="${CTX[guest_vendor]}"
+  local guest_audio_csv="${CTX[guest_audio_csv]}"
+  local host_audio_bdfs_csv="${CTX[host_audio_bdfs_csv]}"
+  local host_audio_node_name="${CTX[host_audio_node_name]}"
 
   say
   say "Summary:"
@@ -2712,8 +2702,7 @@ main() {
     assert_pci_bdf_exists "$host_audio_bdfs_csv"
   fi
   if [[ -n "$guest_audio_csv" ]]; then
-    # validate each guest audio bdf
-    local IFS=','
+    local IFS=',' dev
     for dev in $guest_audio_csv; do
       [[ -n "$dev" ]] || continue
       assert_pci_bdf_exists "$dev"
@@ -2760,8 +2749,7 @@ main() {
 
   say
   hdr "Boot configuration (IOMMU / boot loader)"
-  local bl2
-  bl2="$(detect_bootloader)"
+  local bl2="${CTX[bootloader]}"
   note "IOMMU must be enabled for PCI passthrough to work."
   note "Boot loader detected: ${bl2}"
   if [[ "$bl2" == "grub" ]]; then
@@ -2844,137 +2832,87 @@ main() {
       if ! prompt_yn "You typed BLACKLIST. Do you still want to create a driver blacklist file now?" N "Driver blacklist"; then
         note "Skipping driver blacklist (user cancelled after confirmation)."
       else
-        local -a mods=() candidates=() recommended=()
-
-        case "${guest_vendor,,}" in
-          10de)
-            candidates=(nouveau nvidia nvidia_drm nvidia_modeset nvidia_uvm)
-            # No safe universal default for NVIDIA -> recommended empty.
-            recommended=()
-            ;;
-          1002)
-            # AMD: amdgpu is often needed for the host GPU on dual-AMD systems.
-            candidates=(amdgpu radeon)
-            # Conservative default: blacklist only the legacy radeon module.
-            recommended=(2)
-            ;;
-          8086)
-            candidates=(i915)
-            # No safe universal default -> recommended empty.
-            recommended=()
-            ;;
-          *)
-            candidates=()
-            recommended=()
-            note "Unknown vendor; no suggested modules."
-            ;;
-        esac
-
-        if (( ${#candidates[@]} == 0 )); then
-          note "No blacklist candidates for this vendor; skipping."
-        else
-          say
-          note "Choose which kernel modules to blacklist by number (example: 1 2)."
-          note "Enter 0 for none."
-          if (( ${#recommended[@]} > 0 )); then
-            note "Press ENTER for recommended: ${recommended[*]}"
-          else
-            note "Press ENTER for recommended: (none)"
-          fi
-
-          local in="/dev/stdin"
-          local out="/dev/stderr"
-          if [[ -r /dev/tty && -w /dev/tty ]]; then
-            in="/dev/tty"
-            out="/dev/tty"
-          fi
-
-          while true; do
-            local i
-            for i in "${!candidates[@]}"; do
-              local n=$((i+1))
-              printf '  [%d] blacklist %s\n' "$n" "${candidates[$i]}" >"$out"
-            done
-
-            printf 'Select modules to blacklist (numbers): ' >"$out"
-            local raw
-            read -r raw <"$in" || raw=""
-            raw="$(trim "$raw")"
-
-            local -a picks=()
-
-            if [[ -z "$raw" ]]; then
-              picks=("${recommended[@]}")
-            elif [[ "$raw" == "0" ]]; then
-              picks=()
-            else
-              # allow commas and spaces
-              raw="${raw//,/ }"
-              local tok
-              for tok in $raw; do
-                [[ "$tok" =~ ^[0-9]+$ ]] || { printf '%s\n' "Invalid selection: '$tok'" >"$out"; picks=(); break; }
-                (( tok >= 1 && tok <= ${#candidates[@]} )) || { printf '%s\n' "Out of range: $tok" >"$out"; picks=(); break; }
-                # de-dupe
-                local seen=0 x
-                for x in "${picks[@]}"; do
-                  [[ "$x" == "$tok" ]] && { seen=1; break; }
-                done
-                (( seen )) || picks+=("$tok")
-              done
-              # if we broke due to invalid input, re-prompt
-              if [[ "$raw" != "0" && -n "$raw" && ${#picks[@]} -eq 0 ]]; then
-                continue
-              fi
-            fi
-
-            mods=()
-            local p
-            for p in "${picks[@]}"; do
-              mods+=("${candidates[$((p-1))]}")
-            done
-            break
-          done
-
-          if (( ${#mods[@]} > 0 )); then
-            write_optional_blacklist "$guest_vendor" "${mods[@]}"
-            say "Wrote $BLACKLIST_FILE"
-            say "NOTE: If you blacklist modules, updating initramfs is strongly recommended."
-          else
-            say "No modules selected; skipping blacklist file."
-          fi
-        fi
+        write_optional_blacklist "$guest_vendor" "${suggested_mods[@]}"
+        maybe_update_initramfs
       fi
     fi
+  else
+    note "Skipping driver blacklist submenu."
   fi
 
+  say
+  hdr "Initramfs update (recommended)"
   if prompt_yn "Update initramfs now? (recommended after VFIO and/or blacklisting changes)" Y "Initramfs update"; then
     maybe_update_initramfs
+  else
+    note "Skipping initramfs rebuild; remember to update it yourself before relying on VFIO settings."
   fi
 
-  # Generate a rollback script after changes are applied.
-  generate_rollback_script
-
+  say
   if prompt_yn "Install a user systemd unit to set the host default audio sink after login?" Y "Host audio output"; then
     install_audio_script
     install_user_audio_unit
+  else
+    note "Skipping user systemd audio helper. You can install it later by re-running this helper."
   fi
 
   say
   say "Done. Next steps:"
   say "  1) Reboot."
   say "  2) Verify guest devices are bound to vfio-pci:"
-  say "       lspci -nnk -s $guest_gpu"
+  say "       lspci -nnk -s ${guest_gpu}"
   if [[ -n "$guest_audio_csv" ]]; then
-    local IFS=','
-    for dev in $guest_audio_csv; do
-      say "       lspci -nnk -s $dev"
-    done
+    say "       lspci -nnk -s ${guest_audio_csv//,/ }"
   fi
-  say "  3) Verify host audio device is NOT on vfio-pci:"
   if [[ -n "$host_audio_bdfs_csv" ]]; then
+    say "  3) Verify host audio device is NOT on vfio-pci:"
     say "       lspci -nnk -s ${host_audio_bdfs_csv%%,*}"
   fi
   say "  4) In your VM manager, passthrough the guest GPU and any selected guest audio PCI functions."
+}
+
+main() {
+  parse_args "$@"
+
+  need_cmd lspci
+  need_cmd modprobe
+  need_cmd sed
+  need_cmd awk
+  need_cmd grep
+  need_cmd install
+  need_cmd mktemp
+  need_cmd stat
+  # Optional but improves UX for PipeWire enumeration under sudo
+  have_cmd runuser || true
+
+  if [[ "$MODE" == "verify" ]]; then
+    verify_setup
+    exit $?
+  fi
+
+  if [[ "$MODE" == "detect" ]]; then
+    detect_existing_vfio_report
+    exit 0
+  fi
+
+  if [[ "$MODE" == "self-test" ]]; then
+    self_test
+    exit $?
+  fi
+
+  if [[ "$MODE" == "reset" ]]; then
+    require_root
+    require_systemd
+    reset_vfio_all
+    exit 0
+  fi
+
+  require_root
+  require_systemd
+
+  detect_system
+  user_selection
+  apply_configuration
 }
 
 main "$@"
