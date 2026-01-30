@@ -2378,6 +2378,30 @@ reset_vfio_all() {
     fi
   fi
 
+  # On openSUSE-like systems using systemd-boot/sdbootutil, also offer to
+  # remove VFIO/IOMMU params from /etc/kernel/cmdline so future kernel
+  # entries stop inheriting them.
+  if is_opensuse_like && [[ -f /etc/kernel/cmdline ]]; then
+    if prompt_yn "Also remove IOMMU/VFIO kernel params from /etc/kernel/cmdline (amd_iommu/intel_iommu, iommu=pt, pcie_acs_override)?" Y "Reset: boot options (persistence)"; then
+      backup_file /etc/kernel/cmdline
+      local kcur knew
+      kcur="$(cat /etc/kernel/cmdline 2>/dev/null || true)"
+      knew="$kcur"
+      knew="$(remove_param_all "$knew" "amd_iommu=on")"
+      knew="$(remove_param_all "$knew" "intel_iommu=on")"
+      knew="$(remove_param_all "$knew" "iommu=pt")"
+      knew="$(remove_param_all "$knew" "pcie_acs_override=downstream,multifunction")"
+      if [[ "$(trim "$knew")" != "$(trim "$kcur")" ]]; then
+        if (( ! DRY_RUN )); then
+          printf '%s
+' "$knew" >/etc/kernel/cmdline
+        fi
+      else
+        note "No matching VFIO/IOMMU params found in /etc/kernel/cmdline; leaving it unchanged."
+      fi
+    fi
+  fi
+
   # Always regenerate GRUB config if we changed /etc/default/grub.
   if (( grub_changed )); then
     if command -v update-grub >/dev/null 2>&1; then
