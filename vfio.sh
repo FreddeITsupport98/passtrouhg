@@ -1533,6 +1533,19 @@ systemd_boot_add_kernel_params() {
 
   local -a opts_list=()
   local i title current_opts
+
+  # Try to auto-detect the currently booted entry by matching root= and
+  # rootflags= from /proc/cmdline against each entry's options line.
+  local running_cmdline running_root running_rootflags
+  local entry_root entry_rootflags
+  local auto_idx=""
+
+  running_cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
+  if [[ -n "$running_cmdline" ]]; then
+    running_root="$(sed -n 's/.*\<root=\([^ ]*\).*/\1/p' <<<"$running_cmdline")"
+    running_rootflags="$(sed -n 's/.*\<rootflags=\([^ ]*\).*/\1/p' <<<"$running_cmdline")"
+  fi
+
   for i in "${!entries[@]}"; do
     f="${entries[$i]}"
     title="$(grep -m1 -E '^title[[:space:]]+' "$f" 2>/dev/null | sed -E 's/^title[[:space:]]+//')"
@@ -1540,14 +1553,34 @@ systemd_boot_add_kernel_params() {
     current_opts="$(grep -m1 -E '^options[[:space:]]+' "$f" 2>/dev/null | sed -E 's/^options[[:space:]]+//')"
     current_opts="$(trim "${current_opts:-<none>}")"
     opts_list+=("$title"$'\n'"  file: $(basename "$f")"$'\n'"  options: $current_opts")
+
+    if [[ -n "$running_root" && -n "$running_rootflags" && "$current_opts" != "<none>" ]]; then
+      entry_root="$(sed -n 's/.*\<root=\([^ ]*\).*/\1/p' <<<"$current_opts")"
+      entry_rootflags="$(sed -n 's/.*\<rootflags=\([^ ]*\).*/\1/p' <<<"$current_opts")"
+      if [[ -n "$entry_root" && -n "$entry_rootflags" && \
+            "$entry_root" == "$running_root" && "$entry_rootflags" == "$running_rootflags" ]]; then
+        # If we find exactly one match, remember it. If we somehow match
+        # more than one entry, mark as ambiguous and fall back to manual.
+        if [[ -z "$auto_idx" ]]; then
+          auto_idx="$i"
+        else
+          auto_idx=""
+        fi
+      fi
+    fi
   done
 
   hdr "Current Boot Entry Update"
   note "This will edit the selected systemd-boot entry in-place for the CURRENT kernel."
 
-  local idx
-  idx="$(select_from_list "Select the systemd-boot entry to modify:" "Boot entry selection" "${opts_list[@]}")"
-  local entry_path="${entries[$idx]}"
+  local idx entry_path
+  if [[ -n "$auto_idx" ]]; then
+    entry_path="${entries[$auto_idx]}"
+    note "Auto-detected current boot entry: $(basename "$entry_path")"
+  else
+    idx="$(select_from_list "Select the systemd-boot entry to modify:" "Boot entry selection" "${opts_list[@]}")"
+    entry_path="${entries[$idx]}"
+  fi
 
   current_opts="$(grep -m1 -E '^options[[:space:]]+' "$entry_path" 2>/dev/null | sed -E 's/^options[[:space:]]+//')"
   current_opts="$(trim "${current_opts:-}")"
