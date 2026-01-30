@@ -1386,6 +1386,35 @@ grub_add_kernel_params() {
     new="$(add_param_once "$new" "pcie_acs_override=downstream,multifunction")"
   fi
 
+  # Optional: disable quiet/splash and show verbose boot logs while testing VFIO.
+  say
+  hdr "Boot verbosity (optional)"
+  note "While you are testing VFIO passthrough it is often useful to see full boot logs instead of a silent splash screen."
+  note "This option will remove 'quiet' and 'splash=silent' from the kernel cmdline and add 'systemd.show_status=1 loglevel=7'."
+  note "You can later revert this by running the script with --reset or manually editing /etc/default/grub."
+  if prompt_yn "Disable boot splash / quiet and enable detailed text logs on boot?" Y; then
+    new="$(remove_param_all "$new" "quiet")"
+    new="$(remove_param_all "$new" "splash=silent")"
+    new="$(add_param_once "$new" "systemd.show_status=1")"
+    new="$(add_param_once "$new" "loglevel=7")"
+  fi
+
+  # Dracut-specific early driver ordering (advanced)
+  # On dracut-based systems, you can ask dracut to preload vfio-pci before
+  # other drivers via rd.driver.pre=vfio-pci. This can help vfio-pci "win"
+  # the race against amdgpu/nvidia/i915 when those are pulled into the
+  # initramfs. It is still optional because misconfiguration can affect
+  # boot if your host depends on those drivers very early.
+  if command -v dracut >/dev/null 2>&1; then
+    say
+    hdr "Advanced (optional): rd.driver.pre=vfio-pci (dracut)"
+    note "On dracut-based systems this can help vfio-pci bind the guest GPU before display drivers inside the initramfs."
+    note "Only enable this if you understand the implications and have a rollback/snapshot available."
+    if prompt_yn "Add rd.driver.pre=vfio-pci to the kernel cmdline?" N; then
+      new="$(add_param_once "$new" "rd.driver.pre=vfio-pci")"
+    fi
+  fi
+
   # Safety: do not silently rewrite if nothing changed.
   if [[ "$(trim "$new")" == "$(trim "$current")" ]]; then
     say "GRUB cmdline unchanged (params already present)."
