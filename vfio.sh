@@ -1543,7 +1543,8 @@ systemd_boot_add_kernel_params() {
   running_cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
   if [[ -n "$running_cmdline" ]]; then
     running_root="$(sed -n 's/.*\<root=\([^ ]*\).*/\1/p' <<<"$running_cmdline")"
-    running_rootflags="$(sed -n 's/.*\<rootflags=\([^ ]*\).*/\1/p' <<<"$running_cmdline")"
+    # Use extended regex to handle optional quotes around rootflags value
+    running_rootflags="$(sed -nE 's/.*rootflags="?([^ "]+)"?.*/\1/p' <<<"$running_cmdline")"
   fi
 
   for i in "${!entries[@]}"; do
@@ -1556,15 +1557,24 @@ systemd_boot_add_kernel_params() {
 
     if [[ -n "$running_root" && -n "$running_rootflags" && "$current_opts" != "<none>" ]]; then
       entry_root="$(sed -n 's/.*\<root=\([^ ]*\).*/\1/p' <<<"$current_opts")"
-      entry_rootflags="$(sed -n 's/.*\<rootflags=\([^ ]*\).*/\1/p' <<<"$current_opts")"
+      # Use extended regex to handle optional quotes around rootflags value
+      entry_rootflags="$(sed -nE 's/.*rootflags="?([^ "]+)"?.*/\1/p' <<<"$current_opts")"
+      # CHECK: Does this entry actually match the running kernel version?
+      # We grep the file for the current kernel version (e.g. "6.18.7-1-default").
+      local running_kernel
+      running_kernel="$(uname -r)"
+
       if [[ -n "$entry_root" && -n "$entry_rootflags" && \
             "$entry_root" == "$running_root" && "$entry_rootflags" == "$running_rootflags" ]]; then
-        # If we find exactly one match, remember it. If we somehow match
-        # more than one entry, mark as ambiguous and fall back to manual.
-        if [[ -z "$auto_idx" ]]; then
+        # logical_match: 1 if the file contains the kernel version string, 0 otherwise
+        local logical_match=0
+        if grep -Fq "$running_kernel" "$f"; then
+          logical_match=1
+        fi
+
+        # If we match root flags AND kernel version, this is definitely our guy.
+        if (( logical_match )); then
           auto_idx="$i"
-        else
-          auto_idx=""
         fi
       fi
     fi
@@ -1736,10 +1746,12 @@ maybe_update_initramfs() {
   fi
 
   if command -v dracut >/dev/null 2>&1; then
-    say "Updating initramfs via dracut (no --force; will refuse to overwrite on error) ..."
-    if ! run dracut; then
-      note "dracut failed or refused to overwrite an existing initramfs."
-      note "Your previous initramfs is still on disk. Review the dracut error above and rerun dracut manually (for example: dracut --force) once you are satisfied."
+    say "Updating initramfs via dracut (--force) ..."
+    # On openSUSE and many dracut-based systems, overwriting an existing
+    # initramfs requires --force; without it, dracut will often refuse
+    # to update and silently leave the old image in place.
+    if ! run dracut --force; then
+      note "dracut failed even with --force. Your previous initramfs is still on disk."
     fi
     return 0
   fi
