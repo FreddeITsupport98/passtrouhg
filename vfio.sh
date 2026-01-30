@@ -60,6 +60,14 @@ need_cmd() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $
 
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+# Optional TUI support (whiptail/dialog-style). If not available, we fall back
+# to the existing plain-text prompts. This keeps the script usable everywhere
+# while offering a nicer UI when possible.
+HAS_TUI=0
+if command -v whiptail >/dev/null 2>&1; then
+  HAS_TUI=1
+fi
+
 run() {
   # Print commands in debug mode; honor DRY_RUN.
   if (( DEBUG )); then
@@ -72,9 +80,24 @@ run() {
 }
 
 prompt_yn() {
-  # prompt_yn "Question" default(Y/N)
-  local q="$1"; local def="${2:-Y}"; local ans
+  # prompt_yn "Question" default(Y/N) [title]
+  local q="$1"; local def="${2:-Y}"; local title="${3:-Confirmation}"; local ans
 
+  # TUI path: use whiptail if available.
+  if (( HAS_TUI )); then
+    local exit_status
+    if [[ "$def" =~ ^[Nn]$ ]]; then
+      whiptail --title "$title" --defaultno --yesno "$q" 10 60
+      exit_status=$?
+    else
+      whiptail --title "$title" --yesno "$q" 10 60
+      exit_status=$?
+    fi
+    # whiptail exit status: 0 = Yes, 1/255 = No/ESC
+    return $exit_status
+  fi
+
+  # Fallback: original plain-text logic on /dev/tty.
   # IMPORTANT: don't rely on stdin/stdout being connected to a TTY (sudo/fish/GUI terminals).
   # Also avoid printing prompts to stdout (some callers may capture stdout).
   local in="/dev/stdin"
@@ -102,10 +125,11 @@ prompt_yn() {
 
 usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME [--debug] [--dry-run] [--verify] [--detect] [--self-test] [--reset]
+Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--verify] [--detect] [--self-test] [--reset]
 
   --debug      Enable verbose debug logging (and bash xtrace).
   --dry-run    Show actions but do not write files / run system-changing commands.
+  --no-tui     Force plain-text prompts even if whiptail is installed.
   --verify     Do not change anything; validate an existing setup (reads $CONF_FILE).
   --detect     Print a detailed report of existing VFIO/passthrough configuration and exit.
   --self-test  Run automated checks for common issues (awk compatibility, PipeWire access) and exit.
@@ -122,6 +146,9 @@ parse_args() {
         ;;
       --dry-run)
         DRY_RUN=1
+        ;;
+      --no-tui)
+        HAS_TUI=0
         ;;
       --verify)
         MODE="verify"
@@ -302,11 +329,11 @@ gpu_in_use_preflight() {
           fb_param="video=vesafb:off"
         fi
 
-        if prompt_yn "Add '$fb_param' to GRUB kernel parameters to disable this framebuffer?" Y; then
+    if prompt_yn "Add '$fb_param' to GRUB kernel parameters to disable this framebuffer?" Y "Boot framebuffer options"; then
           export GRUB_EXTRA_PARAMS="${GRUB_EXTRA_PARAMS:-} ${fb_param}"
           say "Queued '$fb_param' for GRUB update. It will be applied if you enable IOMMU/GRUB editing."
-        else
-          if ! prompt_yn "Continue without fixing (higher risk of passthrough failure)?" N; then
+    else
+          if ! prompt_yn "Continue without fixing (higher risk of passthrough failure)?" N "Boot framebuffer options"; then
             die "Aborted due to active framebuffer lock."
           fi
         fi
@@ -872,10 +899,31 @@ short_audio_desc() {
 }
 
 select_from_list() {
-  local prompt="$1"; shift
+  # select_from_list "Prompt" "Title" options...
+  local prompt="$1"; local title="$2"; shift 2
   local -a options=("$@")
   local idx
 
+  # TUI path: use whiptail if available. We keep zero-based indices by using
+  # the index as the whiptail TAG and returning it directly.
+  if (( HAS_TUI )); then
+    local -a menu_args=()
+    local i opt first_line
+    for i in "${!options[@]}"; do
+      opt="${options[$i]}"
+      # Use the first line of the option as the menu label.
+      first_line="${opt%%$'\n'*}"
+      menu_args+=("$i" "$first_line")
+    done
+
+    local choice
+    choice=$(whiptail --title "$title" --menu "$prompt" 20 75 10 "${menu_args[@]}" 3>&1 1>&2 2>&3) || die "Selection cancelled."
+    # choice is already the zero-based index as a string.
+    echo "$choice"
+    return 0
+  fi
+
+  # Fallback: original plain-text menu on /dev/tty.
   # IMPORTANT: stdout is reserved for the return value (index). Print UI to tty/stderr.
   local in="/dev/stdin"
   local out="/dev/stderr"
@@ -1346,6 +1394,18 @@ detect_bootloader() {
   echo "unknown"
 }
 
+# Return 0 if this looks like an openSUSE-like system (used to gate /etc/kernel/cmdline edits).
+is_opensuse_like() {
+  if [[ -r /etc/os-release ]]; then
+    # Match ID=opensuse* or ID_LIKE containing opensuse
+    if grep -qiE '^ID=.?opensuse' /etc/os-release || \
+       grep -qiE '^ID_LIKE=.*opensuse' /etc/os-release; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
 # Locate the systemd-boot entries directory (if any).
 systemd_boot_entries_dir() {
   local d
@@ -1408,9 +1468,9 @@ systemd_boot_add_kernel_params() {
   # --- openSUSE / sdbootutil persistence layer ---
   # openSUSE uses /etc/kernel/cmdline to generate entries on update.
   # We must edit this file to ensure settings survive a kernel upgrade.
-  if [[ -f /etc/kernel/cmdline ]]; then
+  if is_opensuse_like && [[ -f /etc/kernel/cmdline ]]; then
     hdr "openSUSE Persistence Check"
-    note "Detected /etc/kernel/cmdline. This is used by openSUSE to generate boot entries."
+    note "Detected /etc/kernel/cmdline on an openSUSE-like system. This is used to generate boot entries."
     
     local cmdline_content
     cmdline_content="$(cat /etc/kernel/cmdline)"
@@ -1423,7 +1483,7 @@ systemd_boot_add_kernel_params() {
     done
     
     # ACS Override check for cmdline file
-    if prompt_yn "Enable ACS override in /etc/kernel/cmdline (persistence)?" N; then
+    if prompt_yn "Enable ACS override in /etc/kernel/cmdline (persistence)?" N "Boot options (persistence)"; then
       new_cmdline="$(add_param_once "$new_cmdline" "pcie_acs_override=downstream,multifunction")"
     fi
 
@@ -1472,7 +1532,7 @@ systemd_boot_add_kernel_params() {
   note "This will edit the selected systemd-boot entry in-place for the CURRENT kernel."
 
   local idx
-  idx="$(select_from_list "Select the systemd-boot entry to modify:" "${opts_list[@]}")"
+  idx="$(select_from_list "Select the systemd-boot entry to modify:" "Boot entry selection" "${opts_list[@]}")"
   local entry_path="${entries[$idx]}"
 
   current_opts="$(grep -m1 -E '^options[[:space:]]+' "$entry_path" 2>/dev/null | sed -E 's/^options[[:space:]]+//')"
@@ -1486,7 +1546,7 @@ systemd_boot_add_kernel_params() {
   
   say
   hdr "Advanced (optional): ACS override (systemd-boot)"
-  if prompt_yn "Enable ACS override (pcie_acs_override=downstream,multifunction) in this entry?" N; then
+  if prompt_yn "Enable ACS override (pcie_acs_override=downstream,multifunction) in this entry?" N "Boot options (systemd-boot)"; then
     new_opts="$(add_param_once "$new_opts" "pcie_acs_override=downstream,multifunction")"
   fi
 
@@ -1545,7 +1605,7 @@ grub_add_kernel_params() {
   note "Downsides: weaker PCIe isolation/security and possible instability."
   note "Recommended: NO unless you know you need it."
 
-  if prompt_yn "Enable ACS override in GRUB (pcie_acs_override=downstream,multifunction)?" N; then
+  if prompt_yn "Enable ACS override in GRUB (pcie_acs_override=downstream,multifunction)?" N "Boot options (GRUB)"; then
     new="$(add_param_once "$new" "pcie_acs_override=downstream,multifunction")"
   fi
 
@@ -1555,7 +1615,7 @@ grub_add_kernel_params() {
   note "While you are testing VFIO passthrough it is often useful to see full boot logs instead of a silent splash screen."
   note "This option will remove 'quiet' and 'splash=silent' from the kernel cmdline and add 'systemd.show_status=1 loglevel=7'."
   note "You can later revert this by running the script with --reset or manually editing /etc/default/grub."
-  if prompt_yn "Disable boot splash / quiet and enable detailed text logs on boot?" Y; then
+  if prompt_yn "Disable boot splash / quiet and enable detailed text logs on boot?" Y "Boot verbosity"; then
     new="$(remove_param_all "$new" "quiet")"
     new="$(remove_param_all "$new" "splash=silent")"
     new="$(add_param_once "$new" "systemd.show_status=1")"
@@ -1573,7 +1633,7 @@ grub_add_kernel_params() {
     hdr "Advanced (optional): rd.driver.pre=vfio-pci (dracut)"
     note "On dracut-based systems this can help vfio-pci bind the guest GPU before display drivers inside the initramfs."
     note "Only enable this if you understand the implications and have a rollback/snapshot available."
-    if prompt_yn "Add rd.driver.pre=vfio-pci to the kernel cmdline?" N; then
+    if prompt_yn "Add rd.driver.pre=vfio-pci to the kernel cmdline?" N "Boot options (dracut)"; then
       new="$(add_param_once "$new" "rd.driver.pre=vfio-pci")"
     fi
   fi
@@ -1887,6 +1947,42 @@ EOF
   note "If it isn't enabled automatically, run after login: systemctl --user enable --now vfio-set-host-audio.service"
 }
 
+install_udev_isolation() {
+  local gpu_bdf="$1"
+  local audio_csv="$2"
+
+  local rule_file="/etc/udev/rules.d/99-vfio-isolation.rules"
+  backup_file "$rule_file"
+
+  # Base rule for the guest GPU itself.
+  write_file_atomic "$rule_file" 0644 "root:root" <<EOF
+# Generated by $SCRIPT_NAME on $(date -Is)
+# Remove Guest GPU from the master seat to prevent the host desktop from grabbing it.
+
+# GPU
+ACTION=="add", SUBSYSTEM=="pci", KERNELS=="$gpu_bdf", TAG-="seat", TAG-="master-of-seat"
+EOF
+
+  # Append rules for any associated guest audio PCI functions (if provided).
+  if [[ -n "$audio_csv" ]]; then
+    local IFS=',' aud
+    for aud in $audio_csv; do
+      [[ -n "$aud" ]] || continue
+      if (( DRY_RUN )); then
+        continue
+      fi
+      printf '%s\n' "ACTION==\"add\", SUBSYSTEM==\"pci\", KERNELS==\"$aud\", TAG-=\"seat\", TAG-=\"master-of-seat\"" >>"$rule_file" || true
+    done
+  fi
+
+  if have_cmd udevadm; then
+    run udevadm control --reload-rules
+    run udevadm trigger
+  fi
+
+  say "Installed udev isolation rules to prevent the host UI from grabbing the guest GPU (and HDMI audio, if selected)."
+}
+
 # ---------------- Main ----------------
 
 verify_setup() {
@@ -2187,7 +2283,7 @@ reset_vfio_all() {
     remove_user_audio_unit "$SUDO_USER"
   fi
 
-  if prompt_yn "Also remove vfio-set-host-audio.service for ALL users under /home/* ?" N; then
+  if prompt_yn "Also remove vfio-set-host-audio.service for ALL users under /home/* ?" N "Reset: user audio units"; then
     local d u
     for d in /home/*; do
       [[ -d "$d" ]] || continue
@@ -2201,7 +2297,7 @@ reset_vfio_all() {
 
   # Remove GRUB kernel parameters added by this script
   if [[ -f /etc/default/grub ]]; then
-    if prompt_yn "Also remove IOMMU/VFIO kernel params from /etc/default/grub (amd_iommu/intel_iommu, iommu=pt, pcie_acs_override)?" Y; then
+    if prompt_yn "Also remove IOMMU/VFIO kernel params from /etc/default/grub (amd_iommu/intel_iommu, iommu=pt, pcie_acs_override)?" Y "Reset: boot options"; then
       backup_file /etc/default/grub
 
       local key current new
@@ -2292,7 +2388,7 @@ preflight_existing_config_gate() {
     if [[ "$status" == "BAD" ]]; then
       hdr "WARNING"
       note "A BAD VFIO configuration was detected. Reset is recommended."
-      if prompt_yn "Reset / cleanup VFIO settings now?" N; then
+      if prompt_yn "Reset / cleanup VFIO settings now?" N "Existing VFIO config"; then
         reset_vfio_all
         exit 0
       fi
@@ -2303,7 +2399,7 @@ preflight_existing_config_gate() {
       fi
     else
       # OK/WARN: offer reset, default no, then proceed.
-      if prompt_yn "Existing VFIO config detected. Do you want to RESET it before continuing?" N; then
+      if prompt_yn "Existing VFIO config detected. Do you want to RESET it before continuing?" N "Existing VFIO config"; then
         reset_vfio_all
         exit 0
       fi
@@ -2419,12 +2515,12 @@ main() {
 
   local guest_idx host_idx
   hdr "Step 1/4: Select GUEST GPU (will be passed through)"
-  guest_idx="$(select_from_list "Which GPU should be the GUEST (vfio-pci / passthrough)?" "${options[@]}")"
+  guest_idx="$(select_from_list "Which GPU should be the GUEST (vfio-pci / passthrough)?" "GPU selection" "${options[@]}")"
 
   if (( ${#gpu_bdfs[@]} == 2 )); then
     if (( guest_idx == 0 )); then host_idx=1; else host_idx=0; fi
   else
-    host_idx="$(select_from_list "Select the GPU to use for HOST display:" "${options[@]}")"
+    host_idx="$(select_from_list "Select the GPU to use for HOST display:" "Host GPU selection" "${options[@]}")"
     (( host_idx != guest_idx )) || die "Host GPU and guest GPU cannot be the same."
   fi
 
@@ -2459,7 +2555,7 @@ main() {
     note "Choose YES if you want HDMI/DP audio output from the VM using the guest GPU."
     note "Choose NO if you plan to use a different audio device (USB headset, emulated audio, etc.)."
 
-    prompt_yn "Also passthrough HDMI/DP AUDIO for the guest GPU?" Y || guest_audio_csv=""
+    prompt_yn "Also passthrough HDMI/DP AUDIO for the guest GPU?" Y "Guest HDMI/DP audio" || guest_audio_csv=""
   else
     say
     hdr "Step 2/4: Guest GPU HDMI/DP Audio"
@@ -2525,7 +2621,7 @@ main() {
 
   if (( ${#aud_bdfs[@]} > 0 )); then
     local host_audio_idx
-    host_audio_idx="$(select_from_list "Which AUDIO device should stay on the HOST?" "${aud_opts[@]}")"
+    host_audio_idx="$(select_from_list "Which AUDIO device should stay on the HOST?" "Host audio selection" "${aud_opts[@]}")"
     host_audio_bdfs_csv="${aud_bdfs[$host_audio_idx]}"
     [[ -n "$host_audio_bdfs_csv" ]] && assert_pci_bdf_exists "$host_audio_bdfs_csv"
   else
@@ -2544,7 +2640,7 @@ main() {
   # PipeWire default sink selection (user-session)
   local host_audio_node_name=""
   if command -v wpctl >/dev/null 2>&1; then
-    if prompt_yn "Do you want to select the DEFAULT AUDIO SINK for the host user session (PipeWire/WirePlumber)?" Y; then
+    if prompt_yn "Do you want to select the DEFAULT AUDIO SINK for the host user session (PipeWire/WirePlumber)?" Y "Host audio output"; then
       note "(Tip: this sets the default sink name for the user session; it does NOT affect VFIO binding.)"
       local -a sink_opts=() sink_node_names=()
 
@@ -2581,7 +2677,7 @@ main() {
         hdr "Step 4/4: Choose default HOST audio output (PipeWire)"
         note "This only sets your desktop's default sound output after login."
         note "It does NOT change what gets passed through to the VM."
-        sink_idx="$(select_from_list "Which host audio OUTPUT should be default?" "${sink_opts[@]}")"
+        sink_idx="$(select_from_list "Which host audio OUTPUT should be default?" "Host audio output selection" "${sink_opts[@]}")"
         host_audio_node_name="${sink_node_names[$sink_idx]}"
       else
         note "Could not enumerate PipeWire sinks (common if PipeWire isn't running for that user yet). Skipping."
@@ -2607,7 +2703,7 @@ main() {
   note "It will then ASK about optional steps (GRUB/IOMMU, ACS override, blacklisting, initramfs, host audio unit)."
   note "Important: The VFIO binding will fully take effect AFTER a reboot."
 
-  prompt_yn "Apply these changes now?" N || die "Aborted by user"
+  prompt_yn "Apply these changes now?" N "Apply VFIO configuration" || die "Aborted by user"
 
   # Preflight sanity checks before writing anything.
   assert_pci_bdf_exists "$host_gpu"
@@ -2632,7 +2728,7 @@ main() {
   hdr "Initramfs integration (optional)"
   note "By default, VFIO modules will load from the root filesystem via $MODULES_LOAD after it is mounted."
   note "You can also pre-load them in the initramfs via dracut config; this is more invasive and can affect very early boot."
-  if prompt_yn "Install dracut config to include VFIO modules in the initramfs now? (advanced)" N; then
+  if prompt_yn "Install dracut config to include VFIO modules in the initramfs now? (advanced)" N "Initramfs integration"; then
     install_dracut_config
   else
     note "Skipping dracut VFIO initramfs config. You can add it later by re-running this helper."
@@ -2643,7 +2739,7 @@ main() {
   note "To reduce race conditions where the GPU driver (amdgpu/nvidia/i915) grabs the card before vfio-pci,"
   note "you can install a softdep rule so vfio-pci is always loaded first for the guest GPU vendor."
   note "This is usually safe, but if you have unusual driver setups you may prefer to skip it."
-  if prompt_yn "Install vfio-pci softdep for $(vendor_name "$guest_vendor") now?" Y; then
+  if prompt_yn "Install vfio-pci softdep for $(vendor_name "$guest_vendor") now?" Y "Module load ordering"; then
     install_softdep_config "$guest_vendor"
   else
     note "Skipping vfio softdep installation. You can add it later in /etc/modprobe.d/vfio-softdep.conf if needed."
@@ -2651,6 +2747,16 @@ main() {
 
   install_bind_script
   install_systemd_unit
+
+  say
+  hdr "Display manager / seat isolation (optional)"
+  note "A udev rule can remove the guest GPU (and its HDMI audio) from the host seat so the display manager does not grab it."
+  note "This is usually helpful on multi-GPU systems where the host desktop should ignore the passthrough card."
+  if prompt_yn "Install udev rule to isolate the guest GPU from the host seat? (recommended)" Y "Seat isolation"; then
+    install_udev_isolation "$guest_gpu" "$guest_audio_csv"
+  else
+    note "Skipping udev isolation; the host display manager may still see the guest GPU."
+  fi
 
   say
   hdr "Boot configuration (IOMMU / boot loader)"
@@ -2679,7 +2785,7 @@ main() {
     q="Show recommended IOMMU kernel parameters and MANUAL instructions now? (recommended)"
   fi
 
-  if prompt_yn "$q" Y; then
+  if prompt_yn "$q" Y "Boot options"; then
     if [[ "$bl2" == "grub" ]]; then
       grub_add_kernel_params
     elif [[ "$bl2" == "systemd-boot" ]]; then
@@ -2730,12 +2836,12 @@ main() {
   fi
 
   # Extra safety: require an explicit BLACKLIST confirmation before entering the submenu.
-  if prompt_yn "Open advanced driver blacklist submenu for $(vendor_name "$guest_vendor") drivers?" N; then
+  if prompt_yn "Open advanced driver blacklist submenu for $(vendor_name "$guest_vendor") drivers?" N "Driver blacklist"; then
     if ! confirm_phrase "WARNING: Driver blacklisting is OPTIONAL and can break host graphics if misused. To continue and create $BLACKLIST_FILE, type BLACKLIST." "BLACKLIST"; then
       note "Skipping driver blacklist (confirmation failed)."
     else
       # User typed BLACKLIST; give them one last chance to cancel and proceed without any blacklist.
-      if ! prompt_yn "You typed BLACKLIST. Do you still want to create a driver blacklist file now?" N; then
+      if ! prompt_yn "You typed BLACKLIST. Do you still want to create a driver blacklist file now?" N "Driver blacklist"; then
         note "Skipping driver blacklist (user cancelled after confirmation)."
       else
         local -a mods=() candidates=() recommended=()
@@ -2841,14 +2947,14 @@ main() {
     fi
   fi
 
-  if prompt_yn "Update initramfs now? (recommended after VFIO and/or blacklisting changes)" Y; then
+  if prompt_yn "Update initramfs now? (recommended after VFIO and/or blacklisting changes)" Y "Initramfs update"; then
     maybe_update_initramfs
   fi
 
   # Generate a rollback script after changes are applied.
   generate_rollback_script
 
-  if prompt_yn "Install a user systemd unit to set the host default audio sink after login?" Y; then
+  if prompt_yn "Install a user systemd unit to set the host default audio sink after login?" Y "Host audio output"; then
     install_audio_script
     install_user_audio_unit
   fi
