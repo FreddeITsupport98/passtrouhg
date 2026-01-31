@@ -1378,7 +1378,18 @@ detect_bootloader() {
     fi
   fi
 
-  # 2) Fallback: Check for systemd-boot config directories directly
+  # 2) openSUSE GRUB2-BLS: uses Boot Loader Spec entries + /etc/kernel/cmdline
+  # even though /etc/default/grub may still exist. We detect this explicitly so
+  # we DO NOT treat it as classic GRUB (which would incorrectly edit
+  # /etc/default/grub and be ignored at boot).
+  if is_opensuse_like && [[ -r /etc/sysconfig/bootloader ]]; then
+    if grep -qi 'LOADER_TYPE=.*grub2-bls' /etc/sysconfig/bootloader 2>/dev/null; then
+      echo "grub2-bls"
+      return 0
+    fi
+  fi
+
+  # 3) Fallback: Check for systemd-boot-style config directories directly
   if [[ -d /boot/loader/entries || -d /efi/loader/entries || -d /boot/efi/loader/entries ]]; then
     # If standard grub dirs are missing, it's definitely systemd-boot
     if [[ ! -d /boot/grub && ! -d /boot/grub2 ]]; then
@@ -1387,19 +1398,19 @@ detect_bootloader() {
     fi
   fi
   
-  # 3) Classic GRUB with /etc/default/grub present (most distros)
+  # 4) Classic GRUB with /etc/default/grub present (most distros)
   if [[ -f /etc/default/grub ]]; then
     echo "grub"
     return 0
   fi
 
-  # 4) GRUB installed but config missing
+  # 5) GRUB installed but config missing
   if [[ -d /boot/grub || -d /boot/grub2 ]]; then
     echo "grub"
     return 0
   fi
 
-  # 5) rEFInd
+  # 6) rEFInd
   if [[ -f /boot/refind_linux.conf || -f /efi/EFI/refind/refind.conf || -f /boot/efi/EFI/refind/refind.conf ]]; then
     echo "refind"
     return 0
@@ -1420,7 +1431,7 @@ is_opensuse_like() {
   return 1
 }
 
-# Locate the systemd-boot entries directory (if any).
+# Locate the systemd-boot / BLS entries directory (if any).
 systemd_boot_entries_dir() {
   local d
   for d in /boot/efi/loader/entries /boot/loader/entries /efi/loader/entries; do
@@ -1430,6 +1441,21 @@ systemd_boot_entries_dir() {
     fi
   done
   return 1
+}
+
+# On openSUSE systems that use Boot Loader Spec (systemd-boot or grub2-bls),
+# kernel parameters are persisted via /etc/kernel/cmdline and propagated to
+# loader entries using sdbootutil. This helper wraps that propagation so we
+# don't rely on editing individual *.conf files by hand.
+opensuse_sdbootutil_update_all_entries() {
+  if ! is_opensuse_like; then
+    return 0
+  fi
+  if ! have_cmd sdbootutil; then
+    return 0
+  fi
+  say "Updating Boot Loader Spec entries via: sdbootutil update-all-entries"
+  run sdbootutil update-all-entries
 }
 
 # Safely rewrite the options line for a single systemd-boot entry.
@@ -1483,11 +1509,12 @@ systemd_boot_add_kernel_params() {
   fi
 
   # --- openSUSE / sdbootutil persistence layer ---
-  # openSUSE uses /etc/kernel/cmdline to generate entries on update.
-  # We must edit this file to ensure settings survive a kernel upgrade.
+  # openSUSE (Tumbleweed / MicroOS / Leap with BLS) uses /etc/kernel/cmdline
+  # to generate Boot Loader Spec entries. We must edit this file AND run
+  # sdbootutil so settings are applied both now and after kernel updates.
   if is_opensuse_like && [[ -f /etc/kernel/cmdline ]]; then
     hdr "openSUSE Persistence Check"
-    note "Detected /etc/kernel/cmdline on an openSUSE-like system. This is used to generate boot entries."
+    note "Detected /etc/kernel/cmdline on an openSUSE-like system. This is used to generate boot entries (GRUB2-BLS / systemd-boot)."
     
     local cmdline_content
     cmdline_content="$(cat /etc/kernel/cmdline)"
@@ -1498,6 +1525,22 @@ systemd_boot_add_kernel_params() {
     for p in "${params_to_add[@]}"; do
       new_cmdline="$(add_param_once "$new_cmdline" "$p")"
     done
+    
+    # On openSUSE with dracut, rd.driver.pre=vfio-pci is effectively
+    # required for reliable GPU binding because the graphics driver is
+    # pulled in very early from the initramfs. Treat it as strongly
+    # recommended here (default YES) instead of a hidden "advanced" knob.
+    if command -v dracut >/dev/null 2>&1; then
+      say
+      hdr "Initramfs early VFIO driver (recommended on openSUSE)"
+      note "On openSUSE (dracut-based), rd.driver.pre=vfio-pci helps vfio-pci claim the guest GPU before amdgpu/nvidia/i915 inside the initramfs."
+      note "Skipping this can lead to boot loops or the GPU being grabbed by the host before VFIO." 
+      if prompt_yn "Add rd.driver.pre=vfio-pci to /etc/kernel/cmdline? (recommended)" Y "Initramfs (openSUSE)"; then
+        new_cmdline="$(add_param_once "$new_cmdline" "rd.driver.pre=vfio-pci")"
+      else
+        note "You chose to skip rd.driver.pre=vfio-pci; passthrough may fail if the initramfs grabs the GPU first."
+      fi
+    fi
     
     # Optional: disable quiet/splash and show verbose boot logs while
     # testing VFIO, just like we do for GRUB. This affects all future
@@ -1528,6 +1571,9 @@ systemd_boot_add_kernel_params() {
 ' "$new_cmdline" > /etc/kernel/cmdline
       fi
       say "Updated /etc/kernel/cmdline for persistence."
+      # For openSUSE BLS/systemd-boot, immediately propagate the new
+      # cmdline into all loader entries so the next reboot uses it.
+      opensuse_sdbootutil_update_all_entries
     else
       say "/etc/kernel/cmdline already contains VFIO/IOMMU params."
     fi
@@ -1647,10 +1693,10 @@ print_manual_iommu_instructions() {
   local param bl
   param="$(cpu_iommu_param)"
   bl="$(detect_bootloader)"
-  if [[ "$bl" != "grub" && "$bl" != "systemd-boot" ]]; then
+  if [[ "$bl" != "grub" && "$bl" != "systemd-boot" && "$bl" != "grub2-bls" ]]; then
     say "Detected boot loader: $bl"
   fi
-  say "Automatic kernel parameter editing is implemented for GRUB and systemd-boot on systemd-based systems."
+  say "Automatic kernel parameter editing is implemented for GRUB, GRUB2-BLS and systemd-boot on systemd-based systems."
   say "Other boot loaders (for example rEFInd or custom UEFI stubs) are NOT auto-edited by this script."
   say "If you use one of those, you must edit your kernel parameters manually. Add these parameters and then reboot:"
   say "  $param iommu=pt"
@@ -1714,6 +1760,19 @@ grub_add_kernel_params() {
   # boot if your host depends on those drivers very early.
   if command -v dracut >/dev/null 2>&1; then
     say
+  # On openSUSE (dracut-based), rd.driver.pre=vfio-pci is strongly
+  # recommended; elsewhere we keep it as an advanced optional setting.
+  if is_opensuse_like; then
+    say
+    hdr "Initramfs early VFIO driver (recommended on openSUSE)"
+    note "On openSUSE with dracut, rd.driver.pre=vfio-pci helps vfio-pci claim the guest GPU before amdgpu/nvidia/i915 in the initramfs."
+    note "Skipping this can cause the host driver to grab the GPU first and break passthrough."
+    if prompt_yn "Add rd.driver.pre=vfio-pci to the kernel cmdline? (recommended)" Y "Boot options (dracut/openSUSE)"; then
+      new="$(add_param_once "$new" "rd.driver.pre=vfio-pci")"
+    else
+      note "You chose to skip rd.driver.pre=vfio-pci; passthrough may fail if the initramfs grabs the GPU first."
+    fi
+  else
     hdr "Advanced (optional): rd.driver.pre=vfio-pci (dracut)"
     note "On dracut-based systems this can help vfio-pci bind the guest GPU before display drivers inside the initramfs."
     note "Only enable this if you understand the implications and have a rollback/snapshot available."
@@ -1721,6 +1780,7 @@ grub_add_kernel_params() {
       new="$(add_param_once "$new" "rd.driver.pre=vfio-pci")"
     fi
   fi
+fi
 
   # Safety: do not silently rewrite if nothing changed.
   if [[ "$(trim "$new")" == "$(trim "$current")" ]]; then
@@ -2423,6 +2483,9 @@ reset_vfio_all() {
           printf '%s
 ' "$knew" >/etc/kernel/cmdline
         fi
+        # Ensure BLS/systemd-boot entries are regenerated without the
+        # VFIO/IOMMU params on openSUSE.
+        opensuse_sdbootutil_update_all_entries
       else
         note "No matching VFIO/IOMMU params found in /etc/kernel/cmdline; leaving it unchanged."
       fi
@@ -2530,7 +2593,7 @@ detect_system() {
   hdr "Environment support"
   note "Init system: systemd (required; other init systems are NOT supported by this helper)."
   note "Boot loader detected: ${CTX[bootloader]}"
-  if [[ "${CTX[bootloader]}" == "grub" || "${CTX[bootloader]}" == "systemd-boot" ]]; then
+  if [[ "${CTX[bootloader]}" == "grub" || "${CTX[bootloader]}" == "systemd-boot" || "${CTX[bootloader]}" == "grub2-bls" ]]; then
     note "Automatic kernel parameter editing is available for ${CTX[bootloader]}."
   else
     note "Automatic kernel parameter editing is ONLY implemented for GRUB and systemd-boot. For ${CTX[bootloader]}, you must apply kernel parameters manually when prompted."
@@ -2621,14 +2684,17 @@ user_selection() {
   local guest_audio_csv="${gpu_audio_bdfs_csv[$guest_idx]}"
   if [[ -n "$guest_audio_csv" ]]; then
     say
-    hdr "Step 2/4: Guest GPU HDMI/DP Audio (optional)"
+    hdr "Step 2/4: Guest GPU HDMI/DP Audio (strongly recommended)"
     say "Guest GPU: ${CTX[guest_gpu]}"
     note "$(short_gpu_desc "$guest_desc")"
     say "Detected HDMI/DP audio PCI function(s) for this GPU: $guest_audio_csv"
-    note "Choose YES if you want HDMI/DP audio output from the VM using the guest GPU."
-    note "Choose NO if you plan to use a different audio device (USB headset, emulated audio, etc.)."
+    note "On many systems (including openSUSE Tumbleweed), it is safest to passthrough BOTH the GPU video (..0) and its HDMI/DP audio (..1)."
+    note "Leaving the HDMI/DP audio on the host while the GPU is passed through can confuse PipeWire/PulseAudio and cause desktop hangs when the VM starts."
+    note "Only skip this if you are sure you do NOT want the GPU's HDMI/DP audio in the guest and understand the risks."
 
-    prompt_yn "Also passthrough HDMI/DP AUDIO for the guest GPU?" Y "Guest HDMI/DP audio" || guest_audio_csv=""
+    if ! prompt_yn "Also passthrough HDMI/DP AUDIO for the guest GPU? (recommended)" Y "Guest HDMI/DP audio"; then
+      guest_audio_csv=""
+    fi
   else
     say
     hdr "Step 2/4: Guest GPU HDMI/DP Audio"
@@ -2851,8 +2917,8 @@ apply_configuration() {
   if [[ "$bl2" == "grub" ]]; then
     note "Recommended: YES (adds amd_iommu=on or intel_iommu=on + iommu=pt to GRUB)."
     note "If you answer NO, passthrough may fail unless you already configured IOMMU another way."
-  elif [[ "$bl2" == "systemd-boot" ]]; then
-    note "Recommended: YES (adds amd_iommu=on or intel_iommu=on + iommu=pt to the selected systemd-boot entry)."
+  elif [[ "$bl2" == "systemd-boot" || "$bl2" == "grub2-bls" ]]; then
+    note "Recommended: YES (adds amd_iommu=on or intel_iommu=on + iommu=pt to the Boot Loader Spec entry and /etc/kernel/cmdline)."
     note "If you answer NO, passthrough may fail unless you already configured IOMMU another way."
   else
     note "Automatic kernel parameter editing is ONLY supported for GRUB and systemd-boot. For ${bl2}, you must add the parameters manually."
@@ -2863,8 +2929,8 @@ apply_configuration() {
   local q
   if [[ "$bl2" == "grub" ]]; then
     q="Enable IOMMU kernel parameters in GRUB now? (recommended)"
-  elif [[ "$bl2" == "systemd-boot" ]]; then
-    q="Enable IOMMU kernel parameters in a systemd-boot entry now? (recommended)"
+  elif [[ "$bl2" == "systemd-boot" || "$bl2" == "grub2-bls" ]]; then
+    q="Enable IOMMU kernel parameters in a Boot Loader Spec entry now? (recommended)"
   else
     q="Show recommended IOMMU kernel parameters and MANUAL instructions now? (recommended)"
   fi
@@ -2872,7 +2938,7 @@ apply_configuration() {
   if prompt_yn "$q" Y "Boot options"; then
     if [[ "$bl2" == "grub" ]]; then
       grub_add_kernel_params
-    elif [[ "$bl2" == "systemd-boot" ]]; then
+    elif [[ "$bl2" == "systemd-boot" || "$bl2" == "grub2-bls" ]]; then
       systemd_boot_add_kernel_params
     else
       print_manual_iommu_instructions
@@ -3001,14 +3067,23 @@ apply_configuration() {
 main() {
   parse_args "$@"
 
+  # Core tools used across modes
   need_cmd lspci
-  need_cmd modprobe
   need_cmd sed
   need_cmd awk
   need_cmd grep
   need_cmd install
   need_cmd mktemp
   need_cmd stat
+
+  # modprobe is only required for modes that actually manipulate
+  # kernel modules / bindings. Self-test and detect should be able
+  # to run in "thin" environments (containers, chroots) where
+  # modprobe may be absent.
+  if [[ "$MODE" != "self-test" && "$MODE" != "detect" ]]; then
+    need_cmd modprobe
+  fi
+
   # Optional but improves UX for PipeWire enumeration under sudo
   have_cmd runuser || true
 
