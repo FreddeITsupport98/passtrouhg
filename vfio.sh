@@ -1573,6 +1573,11 @@ systemd_boot_add_kernel_params() {
     local cmdline_content
     cmdline_content="$(cat /etc/kernel/cmdline)"
     local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt" ${GRUB_EXTRA_PARAMS:-})
+    # If we know the exact vfio-pci.ids value for the selected guest GPU,
+    # persist it into /etc/kernel/cmdline as well.
+    if [[ -n "${CTX[guest_vfio_ids]:-}" ]]; then
+      params_to_add+=("vfio-pci.ids=${CTX[guest_vfio_ids]}")
+    fi
     local new_cmdline="$cmdline_content"
     
     local p
@@ -1724,6 +1729,11 @@ systemd_boot_add_kernel_params() {
   current_opts="$(trim "${current_opts:-}")"
 
   local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt" ${GRUB_EXTRA_PARAMS:-})
+  # Mirror vfio-pci.ids for the selected guest GPU into the live entry as
+  # well so the current kernel uses the same binding.
+  if [[ -n "${CTX[guest_vfio_ids]:-}" ]]; then
+    params_to_add+=("vfio-pci.ids=${CTX[guest_vfio_ids]}")
+  fi
   local new_opts="$current_opts"
   for p in "${params_to_add[@]}"; do
     new_opts="$(add_param_once "$new_opts" "$p")"
@@ -1772,6 +1782,11 @@ print_manual_iommu_instructions() {
 grub_add_kernel_params() {
   # Merge standard params with any discovered extras (for example video=efifb:off).
   local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt" ${GRUB_EXTRA_PARAMS:-})
+  # If we know vfio-pci.ids for the selected guest GPU, also place it on
+  # the GRUB cmdline so vfio-pci can bind in the initramfs.
+  if [[ -n "${CTX[guest_vfio_ids]:-}" ]]; then
+    params_to_add+=("vfio-pci.ids=${CTX[guest_vfio_ids]}")
+  fi
 
   if [[ ! -f /etc/default/grub ]]; then
     print_manual_iommu_instructions
@@ -2790,6 +2805,18 @@ user_selection() {
   CTX[guest_gpu]="${gpu_bdfs[$guest_idx]}"
   CTX[host_gpu]="${gpu_bdfs[$host_idx]}"
   CTX[guest_vendor]="${gpu_vendor_ids[$guest_idx]}"
+
+  # Track the exact vendor:device ID for the selected guest GPU so we can
+  # expose a matching vfio-pci.ids= parameter in the kernel cmdline. This
+  # makes sure vfio-pci claims the card as early as possible (initramfs),
+  # which is required on some systems (including openSUSE+dracut) to avoid
+  # races with amdgpu/nvidia/i915.
+  local _guest_vid _guest_did
+  _guest_vid="$(sysfs_read "${CTX[guest_gpu]}" vendor)"
+  _guest_did="$(sysfs_read "${CTX[guest_gpu]}" device)"
+  if [[ -n "$_guest_vid" && -n "$_guest_did" ]]; then
+    CTX[guest_vfio_ids]="${_guest_vid}:${_guest_did}"
+  fi
 
   local guest_desc host_desc
   guest_desc="${gpu_descs[$guest_idx]}"
