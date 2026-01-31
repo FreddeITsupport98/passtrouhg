@@ -1902,21 +1902,33 @@ grub_add_kernel_params() {
 }
 
 maybe_update_initramfs() {
-  # 1. openSUSE BLS/systemd-boot: use sdbootutil to rebuild initramfs
-  #    and install it to the ESP where the bootloader actually reads
-  #    it from. This avoids a "split brain" where /boot/initrd-* is
-  #    updated but the ESP copy is stale.
-  if is_opensuse_like && command -v sdbootutil >/dev/null 2>&1; then
-    say "Rebuilding initramfs and updating ESP via sdbootutil add-all-kernels ..."
-    # 'add-all-kernels' triggers a rebuild/reinstall of the initrd to
-    # the ESP for all known kernels.
-    if run sdbootutil add-all-kernels; then
-      return 0
+  # Prefer a transparent, verbose path on openSUSE/dracut systems so you
+  # can clearly see when dracut is being invoked, while still keeping
+  # Boot Loader Spec / ESP in sync via sdbootutil where applicable.
+
+  # 1. openSUSE with dracut: run dracut explicitly, then sync via sdbootutil
+  #    if it is available. This guarantees visible dracut output.
+  if is_opensuse_like && command -v dracut >/dev/null 2>&1; then
+    say "Updating initramfs via dracut (--force) ..."
+    if run dracut --force; then
+      note "dracut completed; initramfs on the root filesystem is updated."
+    else
+      note "dracut failed even with --force. Your previous initramfs is still on disk."
+      # Even if this fails, we still attempt sdbootutil below so that
+      # any partially-updated images are synced as best-effort.
     fi
-    note "sdbootutil add-all-kernels failed. Falling back to standard initramfs tools (if any)."
-    # Do NOT return here; fall through to standard tools so we can
-    # still try update-initramfs/mkinitcpio/dracut on non-standard
-    # setups.
+
+    if command -v sdbootutil >/dev/null 2>&1; then
+      say "Syncing initramfs and boot entries via sdbootutil add-all-kernels ..."
+      if run sdbootutil add-all-kernels; then
+        return 0
+      fi
+      note "sdbootutil add-all-kernels failed. Boot entries on the ESP may still point at older initrds."
+      # Fall through so we can still try generic tools if present.
+    fi
+    # If we got here on openSUSE with dracut, we've already made our best
+    # effort and printed clear logs, so we don't re-run generic tools.
+    return 0
   fi
 
   # 2. Standard update-initramfs (Debian/Ubuntu)
@@ -1939,7 +1951,7 @@ maybe_update_initramfs() {
     return 1
   fi
 
-  # 4. Standard dracut (Fedora/RHEL/legacy openSUSE)
+  # 4. Standard dracut (Fedora/RHEL/legacy systems)
   if command -v dracut >/dev/null 2>&1; then
     say "Updating initramfs via dracut (--force) ..."
     # On many dracut-based systems, overwriting an existing initramfs
