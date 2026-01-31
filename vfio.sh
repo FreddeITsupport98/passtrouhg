@@ -2239,6 +2239,64 @@ EOF
   say "Installed udev isolation rules to prevent the host UI from grabbing the guest GPU (and HDMI audio, if selected)."
 }
 
+# Install a small helper that dumps the current boot's VFIO-related logs to the
+# desktop of the primary user. This makes it easy to inspect what happened
+# during early boot without having to remember journalctl incantations.
+install_bootlog_dumper() {
+  local user="${SUDO_USER:-}"
+  [[ -n "$user" ]] || return 0
+
+  local home
+  home="$(getent passwd "$user" | cut -d: -f6)"
+  [[ -n "$home" && -d "$home" ]] || return 0
+
+  local bin="/usr/local/bin/vfio-dump-boot-log.sh"
+  local unit="/etc/systemd/system/vfio-dump-boot-log.service"
+
+  backup_file "$bin"
+  backup_file "$unit"
+
+  write_file_atomic "$bin" 0755 "root:root" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+USER_HOME="$home"
+DESKTOP_DIR="${USER_HOME}/Desktop"
+mkdir -p "${DESKTOP_DIR}" || true
+
+# Limit the log to the current boot and focus on kernel/systemd/VFIO messages.
+OUT="${DESKTOP_DIR}/vfio-boot-\$(date +%Y%m%d-%H%M%S).log"
+{
+  echo "# VFIO boot log dump for \$(date -Is)"
+  echo "# Host: \$(hostname)  Kernel: \$(uname -r)"
+  echo
+  journalctl -b -x |
+    sed -n '/kernel: \[    0.000000\]/,
+$ p' || true
+} >"$OUT" 2>&1 || true
+EOF
+
+  write_file_atomic "$unit" 0644 "root:root" <<EOF
+[Unit]
+Description=Dump VFIO boot log to user desktop
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=$bin
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  if have_cmd systemctl; then
+    run systemctl daemon-reload
+    run systemctl enable vfio-dump-boot-log.service || true
+  fi
+
+  note "Boot log dumper installed. On each boot, a vfio-boot-*.log file will appear on ${home}/Desktop."
+}
+
 # Small helper to set KDE Plasma Wayland as the default SDDM session when desired.
 # This is optional and only affects display-manager login, not VFIO itself.
 set_plasma_wayland_default_session() {
@@ -3115,6 +3173,16 @@ apply_configuration() {
 
   install_bind_script
   install_systemd_unit
+
+  say
+  hdr "Boot log capture (optional)"
+  note "You can automatically dump the current boot's journal to a vfio-boot-*.log file on your desktop after each boot."
+  note "This is useful for debugging passthrough problems without needing to remember journalctl commands."
+  if prompt_yn "Install a small helper that saves a VFIO boot log to your Desktop on every boot?" Y "Boot log capture"; then
+    install_bootlog_dumper
+  else
+    note "Skipping boot log dumper; you can always inspect logs manually with journalctl -b."
+  fi
 
   say
   hdr "Display manager / seat isolation (optional)"
