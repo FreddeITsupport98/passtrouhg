@@ -3006,7 +3006,8 @@ apply_configuration() {
   note "  - Write $MODULES_LOAD (load vfio modules at boot)"
   note "  - Write $BIND_SCRIPT (bind ONLY the selected guest BDF(s) to vfio-pci)"
   note "  - Write + enable $SYSTEMD_UNIT (runs the bind script early at boot)"
-  note "It will then ASK about optional steps (GRUB/IOMMU, ACS override, blacklisting, initramfs, host audio unit)."
+  note "On dracut-based systems (including openSUSE), it will also install a VFIO dracut config so rd.driver.pre=vfio-pci cannot cause a boot hang."
+  note "It will then ASK about remaining optional steps (GRUB/IOMMU, ACS override, host audio unit, udev isolation, etc.)."
   note "On KDE Plasma systems, it can also (optionally) set Plasma Wayland as the default SDDM session to better match these settings."
   note "Important: The VFIO binding will fully take effect AFTER a reboot."
 
