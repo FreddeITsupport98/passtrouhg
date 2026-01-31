@@ -1624,9 +1624,10 @@ systemd_boot_add_kernel_params() {
 ' "$new_cmdline" > /etc/kernel/cmdline
       fi
       say "Updated /etc/kernel/cmdline for persistence."
-      # For openSUSE BLS/systemd-boot, immediately propagate the new
-      # cmdline into all loader entries so the next reboot uses it.
-      opensuse_sdbootutil_update_all_entries
+      # NOTE: We defer sdbootutil update-all-entries until AFTER a
+      # successful initramfs rebuild at the end of apply_configuration()
+      # to avoid a window where the bootloader demands rd.driver.pre=
+      # without the driver being present in the initramfs.
     else
       say "/etc/kernel/cmdline already contains VFIO/IOMMU params."
     fi
@@ -1875,16 +1876,26 @@ grub_add_kernel_params() {
 }
 
 maybe_update_initramfs() {
+  # Return 0 only if an initramfs tool was found AND it reported
+  # success. Return non-zero on failure or if no tool is available,
+  # so callers can decide whether it is safe to update bootloader
+  # entries (for example via sdbootutil on openSUSE).
   if command -v update-initramfs >/dev/null 2>&1 && [[ -d /etc/initramfs-tools ]]; then
     say "Updating initramfs via update-initramfs -u ..."
-    run update-initramfs -u
-    return 0
+    if run update-initramfs -u; then
+      return 0
+    fi
+    note "update-initramfs reported an error; initramfs may not have been updated."
+    return 1
   fi
 
   if command -v mkinitcpio >/dev/null 2>&1; then
     say "Updating initramfs via mkinitcpio -P ..."
-    run mkinitcpio -P
-    return 0
+    if run mkinitcpio -P; then
+      return 0
+    fi
+    note "mkinitcpio reported an error; initramfs may not have been updated."
+    return 1
   fi
 
   if command -v dracut >/dev/null 2>&1; then
@@ -1892,13 +1903,15 @@ maybe_update_initramfs() {
     # On openSUSE and many dracut-based systems, overwriting an existing
     # initramfs requires --force; without it, dracut will often refuse
     # to update and silently leave the old image in place.
-    if ! run dracut --force; then
-      note "dracut failed even with --force. Your previous initramfs is still on disk."
+    if run dracut --force; then
+      return 0
     fi
-    return 0
+    note "dracut failed even with --force. Your previous initramfs is still on disk."
+    return 1
   fi
 
   say "NOTE: No initramfs update tool detected (update-initramfs, mkinitcpio, dracut). Skipping."
+  return 1
 }
 
 # ---------------- VFIO binding service ----------------
@@ -3142,7 +3155,17 @@ apply_configuration() {
   say
   hdr "Initramfs update (recommended)"
   if prompt_yn "Update initramfs now? (recommended after VFIO and/or blacklisting changes)" Y "Initramfs update"; then
-    maybe_update_initramfs
+    if maybe_update_initramfs; then
+      # Only refresh Boot Loader Spec entries AFTER a successful
+      # initramfs rebuild to keep kernel cmdline and initramfs content
+      # in sync when using rd.driver.pre=vfio-pci on openSUSE.
+      if is_opensuse_like; then
+        say "Refreshing Boot Loader Spec entries via sdbootutil update-all-entries ..."
+        opensuse_sdbootutil_update_all_entries
+      fi
+    else
+      say "WARNING: Initramfs update failed or no tool was found. Boot loader entries were NOT refreshed via sdbootutil to avoid a broken boot configuration."
+    fi
   else
     note "Skipping initramfs rebuild; remember to update it yourself before relying on VFIO settings."
   fi
