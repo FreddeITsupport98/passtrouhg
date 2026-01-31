@@ -2884,8 +2884,16 @@ user_selection() {
   # PipeWire default sink selection (user-session)
   local host_audio_node_name=""
   if command -v wpctl >/dev/null 2>&1; then
-    if prompt_yn "Do you want to select the DEFAULT AUDIO SINK for the host user session (PipeWire/WirePlumber)?" Y "Host audio output"; then
-      note "(Tip: this sets the default sink name for the user session; it does NOT affect VFIO binding.)"
+    # KDE Plasma users usually manage outputs via the Plasma volume applet. For
+    # them we default this to NO so it behaves like an advanced helper instead
+    # of a mandatory extra question.
+    local sink_prompt_def="Y"
+    if [[ "${XDG_CURRENT_DESKTOP:-}" =~ KDE|Plasma|PLASMA ]]; then
+      sink_prompt_def="N"
+    fi
+
+    if prompt_yn "Do you want to select the DEFAULT AUDIO SINK for the host user session (KDE Plasma / PipeWire / WirePlumber)?" "$sink_prompt_def" "Host audio output"; then
+      note "(Tip: this only changes your desktop's default output device in PipeWire; it does NOT affect VFIO binding or the VM.)"
       local -a sink_opts=() sink_node_names=()
 
       # Prefer sinks that match the selected host audio PCI device.
