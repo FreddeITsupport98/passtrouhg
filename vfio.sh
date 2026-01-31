@@ -332,7 +332,7 @@ gpu_in_use_preflight() {
       # Check if a framebuffer driver is active in iomem
       if grep -qiE '(efifb|simple-framebuffer|vesafb)' /proc/iomem 2>/dev/null; then
         say "${C_YELLOW}WARN: This GPU is marked as Boot VGA and a framebuffer is active.${C_RESET}"
-        note "      This can lock the GPU memory, causing VFIO binding to fail ("Header type 127" / hangs)."
+        note "      This can lock the GPU memory, causing VFIO binding to fail (\"Header type 127\" / hangs)."
         
         local fb_param=""
         if grep -qi "simple-framebuffer" /proc/iomem 2>/dev/null; then
@@ -343,10 +343,12 @@ gpu_in_use_preflight() {
           fb_param="video=vesafb:off"
         fi
 
-    if prompt_yn "Add '$fb_param' to GRUB kernel parameters to disable this framebuffer?" Y "Boot framebuffer options"; then
+        # IMPORTANT for stability on some systems ("Christmas tree" crash):
+        # this prompt now matches the recommended wording exactly.
+        if prompt_yn "Add '$fb_param' to GRUB?" Y "Boot framebuffer options"; then
           export GRUB_EXTRA_PARAMS="${GRUB_EXTRA_PARAMS:-} ${fb_param}"
           say "Queued '$fb_param' for GRUB update. It will be applied if you enable IOMMU/GRUB editing."
-    else
+        else
           if ! prompt_yn "Continue without fixing (higher risk of passthrough failure)?" N "Boot framebuffer options"; then
             die "Aborted due to active framebuffer lock."
           fi
