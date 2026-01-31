@@ -1589,6 +1589,7 @@ systemd_boot_add_kernel_params() {
       note "Skipping this can lead to boot loops or the GPU being grabbed by the host before VFIO." 
       if prompt_yn "Add rd.driver.pre=vfio-pci to /etc/kernel/cmdline? (recommended)" Y "Initramfs (openSUSE)"; then
         new_cmdline="$(add_param_once "$new_cmdline" "rd.driver.pre=vfio-pci")"
+        CTX[rd_driver_pre]=1
       else
         note "You chose to skip rd.driver.pre=vfio-pci; passthrough may fail if the initramfs grabs the GPU first."
       fi
@@ -1812,27 +1813,29 @@ grub_add_kernel_params() {
   # boot if your host depends on those drivers very early.
   if command -v dracut >/dev/null 2>&1; then
     say
-  # On openSUSE (dracut-based), rd.driver.pre=vfio-pci is strongly
-  # recommended; elsewhere we keep it as an advanced optional setting.
-  if is_opensuse_like; then
-    say
-    hdr "Initramfs early VFIO driver (recommended on openSUSE)"
-    note "On openSUSE with dracut, rd.driver.pre=vfio-pci helps vfio-pci claim the guest GPU before amdgpu/nvidia/i915 in the initramfs."
-    note "Skipping this can cause the host driver to grab the GPU first and break passthrough."
-    if prompt_yn "Add rd.driver.pre=vfio-pci to the kernel cmdline? (recommended)" Y "Boot options (dracut/openSUSE)"; then
-      new="$(add_param_once "$new" "rd.driver.pre=vfio-pci")"
+    # On openSUSE (dracut-based), rd.driver.pre=vfio-pci is strongly
+    # recommended; elsewhere we keep it as an advanced optional setting.
+    if is_opensuse_like; then
+      say
+      hdr "Initramfs early VFIO driver (recommended on openSUSE)"
+      note "On openSUSE with dracut, rd.driver.pre=vfio-pci helps vfio-pci claim the guest GPU before amdgpu/nvidia/i915 in the initramfs."
+      note "Skipping this can cause the host driver to grab the GPU first and break passthrough."
+      if prompt_yn "Add rd.driver.pre=vfio-pci to the kernel cmdline? (recommended)" Y "Boot options (dracut/openSUSE)"; then
+        new="$(add_param_once "$new" "rd.driver.pre=vfio-pci")"
+        CTX[rd_driver_pre]=1
+      else
+        note "You chose to skip rd.driver.pre=vfio-pci; passthrough may fail if the initramfs grabs the GPU first."
+      fi
     else
-      note "You chose to skip rd.driver.pre=vfio-pci; passthrough may fail if the initramfs grabs the GPU first."
-    fi
-  else
-    hdr "Advanced (optional): rd.driver.pre=vfio-pci (dracut)"
-    note "On dracut-based systems this can help vfio-pci bind the guest GPU before display drivers inside the initramfs."
-    note "Only enable this if you understand the implications and have a rollback/snapshot available."
-    if prompt_yn "Add rd.driver.pre=vfio-pci to the kernel cmdline?" N "Boot options (dracut)"; then
-      new="$(add_param_once "$new" "rd.driver.pre=vfio-pci")"
+      hdr "Advanced (optional): rd.driver.pre=vfio-pci (dracut)"
+      note "On dracut-based systems this can help vfio-pci bind the guest GPU before display drivers inside the initramfs."
+      note "Only enable this if you understand the implications and have a rollback/snapshot available."
+      if prompt_yn "Add rd.driver.pre=vfio-pci to the kernel cmdline?" N "Boot options (dracut)"; then
+        new="$(add_param_once "$new" "rd.driver.pre=vfio-pci")"
+        CTX[rd_driver_pre]=1
+      fi
     fi
   fi
-fi
 
   # Safety: do not silently rewrite if nothing changed.
   if [[ "$(trim "$new")" == "$(trim "$current")" ]]; then
@@ -2889,6 +2892,11 @@ apply_configuration() {
   local host_audio_bdfs_csv="${CTX[host_audio_bdfs_csv]}"
   local host_audio_node_name="${CTX[host_audio_node_name]}"
 
+  # Track whether we actually installed a dracut config for vfio modules
+  # and whether we added rd.driver.pre=vfio-pci to the kernel cmdline.
+  CTX[dracut_vfio]=0
+  CTX[rd_driver_pre]=0
+
   say
   say "Summary:"
   say "  Host GPU:   $host_gpu"
@@ -2931,10 +2939,39 @@ apply_configuration() {
   hdr "Initramfs integration (optional)"
   note "By default, VFIO modules will load from the root filesystem via $MODULES_LOAD after it is mounted."
   note "You can also pre-load them in the initramfs via dracut config; this is more invasive and can affect very early boot."
-  if prompt_yn "Install dracut config to include VFIO modules in the initramfs now? (advanced)" N "Initramfs integration"; then
-    install_dracut_config
+
+  if command -v dracut >/dev/null 2>&1; then
+    local prompt title default_yes
+    title="Initramfs integration"
+    # On openSUSE/dracut, including vfio modules in the initramfs is
+    # strongly recommended, especially if you plan to use
+    # rd.driver.pre=vfio-pci. Elsewhere it remains an advanced option.
+    if is_opensuse_like; then
+      note "On openSUSE (dracut-based), including vfio modules in the initramfs is recommended to avoid early-boot driver failures."
+      prompt="Install dracut config to include VFIO modules in the initramfs now? (recommended)"
+      default_yes=1
+    else
+      prompt="Install dracut config to include VFIO modules in the initramfs now? (advanced)"
+      default_yes=0
+    fi
+
+    if (( default_yes )); then
+      if prompt_yn "$prompt" Y "$title"; then
+        install_dracut_config
+        CTX[dracut_vfio]=1
+      else
+        note "Skipping dracut VFIO initramfs config. You can add it later by re-running this helper."
+      fi
+    else
+      if prompt_yn "$prompt" N "$title"; then
+        install_dracut_config
+        CTX[dracut_vfio]=1
+      else
+        note "Skipping dracut VFIO initramfs config. You can add it later by re-running this helper."
+      fi
+    fi
   else
-    note "Skipping dracut VFIO initramfs config. You can add it later by re-running this helper."
+    note "dracut not detected; skipping initramfs-specific VFIO config."
   fi
 
   say
@@ -3027,6 +3064,23 @@ apply_configuration() {
         out=""
       fi
       [[ -n "$out" ]] && { say "(Post-install) Updating GRUB config via grub2-mkconfig -o $out ..."; run grub2-mkconfig -o "$out" || true; }
+    fi
+  fi
+
+  # Guard against the "dracut trap": rd.driver.pre=vfio-pci on the
+  # kernel cmdline without including vfio modules in the initramfs.
+  if command -v dracut >/dev/null 2>&1; then
+    if [[ "${CTX[rd_driver_pre]:-0}" == "1" && "${CTX[dracut_vfio]:-0}" != "1" ]]; then
+      say
+      hdr "Dracut / rd.driver.pre sanity check"
+      note "You enabled rd.driver.pre=vfio-pci in the kernel cmdline, but did not install a dracut config to include vfio modules in the initramfs."
+      note "On dracut-based systems (such as openSUSE), this mismatch can cause boot failures if the requested driver is missing from the early initramfs."
+      if prompt_yn "Write dracut config to include VFIO modules in the initramfs now? (recommended)" Y "Initramfs (dracut)"; then
+        install_dracut_config
+        CTX[dracut_vfio]=1
+      else
+        note "You chose to keep rd.driver.pre=vfio-pci without adding vfio modules to the initramfs; this may break boot. Make sure you know how to recover (snapshots, rescue media)."
+      fi
     fi
   fi
 
