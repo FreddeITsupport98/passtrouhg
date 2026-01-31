@@ -1604,6 +1604,7 @@ systemd_boot_add_kernel_params() {
     hdr "Boot verbosity (persistence)"
     note "While you are testing VFIO passthrough it is often useful to see full boot logs instead of a silent splash screen."
     note "This option will remove 'quiet' and 'splash=silent' from the kernel cmdline and add 'systemd.show_status=1 loglevel=7'."
+    note "This automatically removes quiet and splash=silent and adds loglevel=7 for you when installing."
     if prompt_yn "Disable boot splash / quiet and enable detailed text logs on boot?" Y "Boot verbosity (persistence)"; then
       new_cmdline="$(remove_param_all "$new_cmdline" "quiet")"
       new_cmdline="$(remove_param_all "$new_cmdline" "splash=silent")"
@@ -1807,6 +1808,7 @@ grub_add_kernel_params() {
   hdr "Boot verbosity (optional)"
   note "While you are testing VFIO passthrough it is often useful to see full boot logs instead of a silent splash screen."
   note "This option will remove 'quiet' and 'splash=silent' from the kernel cmdline and add 'systemd.show_status=1 loglevel=7'."
+  note "This automatically removes quiet and splash=silent and adds loglevel=7 for you when installing."
   note "You can later revert this by running the script with --reset or manually editing /etc/default/grub."
   if prompt_yn "Disable boot splash / quiet and enable detailed text logs on boot?" Y "Boot verbosity"; then
     new="$(remove_param_all "$new" "quiet")"
@@ -2822,52 +2824,62 @@ user_selection() {
   # Host audio selection (important when AMD HDMI audio IDs repeat, e.g. 1002:ab28)
   local host_audio_bdfs_csv="${gpu_audio_bdfs_csv[$host_idx]}"
 
-  say
-  hdr "Step 3/4: Select HOST audio device (must stay on host)"
-  say "Host GPU is: ${CTX[host_gpu]}"
-  note "$(short_gpu_desc "$host_desc")"
-  note "Pick the AUDIO device that should KEEP working on the host (for your desktop sound)."
-  note "Tip: for HDMI sound from the host GPU, pick the audio device in the SAME PCI slot as the host GPU."
-  note "This avoids the common AMD issue where both HDMI audio devices share the same ID (1002:ab28)."
+  # If the user chose NOT to passthrough any guest HDMI/DP audio, we skip the
+  # host audio binding wizard entirely to avoid extra questions. In that
+  # scenario the script will not try to manage host audio PCI devices at all.
+  if [[ -n "$guest_audio_csv" ]]; then
+    say
+    hdr "Step 3/4: Select HOST audio device (must stay on host)"
+    say "Host GPU is: ${CTX[host_gpu]}"
+    note "$(short_gpu_desc "$host_desc")"
+    note "Pick the AUDIO device that should KEEP working on the host (for your desktop sound)."
+    note "Tip: for HDMI sound from the host GPU, pick the audio device in the SAME PCI slot as the host GPU."
+    note "This avoids the common AMD issue where both HDMI audio devices share the same ID (1002:ab28)."
 
-  local host_slot
-  host_slot="$(pci_slot_of_bdf "${CTX[host_gpu]}")"
+    local host_slot
+    host_slot="$(pci_slot_of_bdf "${CTX[host_gpu]}")"
 
-  local -a aud_opts=() aud_bdfs=()
-  local abdf adesc avendor adev
-  while IFS=$'\t' read -r abdf adesc avendor adev; do
-    local aslot atype vend rec_tag
-    aslot="$(pci_slot_of_bdf "$abdf")"
-    atype="$(short_audio_desc "$adesc")"
-    vend="$(vendor_label "$avendor")"
+    local -a aud_opts=() aud_bdfs=()
+    local abdf adesc avendor adev
+    while IFS=$'\t' read -r abdf adesc avendor adev; do
+      local aslot atype vend rec_tag
+      aslot="$(pci_slot_of_bdf "$abdf")"
+      atype="$(short_audio_desc "$adesc")"
+      vend="$(vendor_label "$avendor")"
 
-    rec_tag=""
-    if [[ "$aslot" == "$host_slot" ]]; then
-      rec_tag="${C_BOLD}${C_GREEN}[RECOMMENDED for host GPU]${C_RESET} "
-      (( ! ENABLE_COLOR )) && rec_tag="[RECOMMENDED for host GPU] "
+      rec_tag=""
+      if [[ "$aslot" == "$host_slot" ]]; then
+        rec_tag="${C_BOLD}${C_GREEN}[RECOMMENDED for host GPU]${C_RESET} "
+        (( ! ENABLE_COLOR )) && rec_tag="[RECOMMENDED for host GPU] "
+      fi
+
+      aud_bdfs+=("$abdf")
+      aud_opts+=("${rec_tag}Audio: $abdf  |  Type: ${atype}  |  Vendor: ${vend}"$'\n'"      PCI slot: ${aslot}  |  IDs: ${avendor}:${adev}"$'\n'"      lspci: $(short_gpu_desc "$adesc")")
+    done < <(audio_devices_discover_all)
+
+    if (( ${#aud_bdfs[@]} > 0 )); then
+      local host_audio_idx
+      host_audio_idx="$(select_from_list "Which AUDIO device should stay on the HOST?" "Host audio selection" "${aud_opts[@]}")"
+      host_audio_bdfs_csv="${aud_bdfs[$host_audio_idx]}"
+      [[ -n "$host_audio_bdfs_csv" ]] && assert_pci_bdf_exists "$host_audio_bdfs_csv"
+    else
+      say "WARN: No PCI audio devices found via lspci."
+      host_audio_bdfs_csv=""
     fi
 
-    aud_bdfs+=("$abdf")
-    aud_opts+=("${rec_tag}Audio: $abdf  |  Type: ${atype}  |  Vendor: ${vend}"$'\n'"      PCI slot: ${aslot}  |  IDs: ${avendor}:${adev}"$'\n'"      lspci: $(short_gpu_desc "$adesc")")
-  done < <(audio_devices_discover_all)
+    # Hard safety: host audio must never equal guest GPU.
+    if [[ -n "$host_audio_bdfs_csv" ]]; then
+      assert_not_equal "$host_audio_bdfs_csv" "${CTX[guest_gpu]}" "Selected host audio equals guest GPU BDF (refusing)."
+    fi
 
-  if (( ${#aud_bdfs[@]} > 0 )); then
-    local host_audio_idx
-    host_audio_idx="$(select_from_list "Which AUDIO device should stay on the HOST?" "Host audio selection" "${aud_opts[@]}")"
-    host_audio_bdfs_csv="${aud_bdfs[$host_audio_idx]}"
-    [[ -n "$host_audio_bdfs_csv" ]] && assert_pci_bdf_exists "$host_audio_bdfs_csv"
+    # Slot sanity: host audio should match host GPU slot unless explicitly overridden.
+    audio_slot_sanity "${CTX[host_gpu]}" "$host_audio_bdfs_csv"
   else
-    say "WARN: No PCI audio devices found via lspci."
+    say
+    hdr "Step 3/4: Host audio binding"
+    note "You chose not to passthrough any HDMI/DP audio for the guest. Skipping host audio PCI binding wizard."
     host_audio_bdfs_csv=""
   fi
-
-  # Hard safety: host audio must never equal guest GPU.
-  if [[ -n "$host_audio_bdfs_csv" ]]; then
-    assert_not_equal "$host_audio_bdfs_csv" "${CTX[guest_gpu]}" "Selected host audio equals guest GPU BDF (refusing)."
-  fi
-
-  # Slot sanity: host audio should match host GPU slot unless explicitly overridden.
-  audio_slot_sanity "${CTX[host_gpu]}" "$host_audio_bdfs_csv"
 
   # PipeWire default sink selection (user-session)
   local host_audio_node_name=""
