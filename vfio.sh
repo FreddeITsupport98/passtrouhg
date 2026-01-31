@@ -1876,10 +1876,24 @@ grub_add_kernel_params() {
 }
 
 maybe_update_initramfs() {
-  # Return 0 only if an initramfs tool was found AND it reported
-  # success. Return non-zero on failure or if no tool is available,
-  # so callers can decide whether it is safe to update bootloader
-  # entries (for example via sdbootutil on openSUSE).
+  # 1. openSUSE BLS/systemd-boot: use sdbootutil to rebuild initramfs
+  #    and install it to the ESP where the bootloader actually reads
+  #    it from. This avoids a "split brain" where /boot/initrd-* is
+  #    updated but the ESP copy is stale.
+  if is_opensuse_like && command -v sdbootutil >/dev/null 2>&1; then
+    say "Rebuilding initramfs and updating ESP via sdbootutil add-all-kernels ..."
+    # 'add-all-kernels' triggers a rebuild/reinstall of the initrd to
+    # the ESP for all known kernels.
+    if run sdbootutil add-all-kernels; then
+      return 0
+    fi
+    note "sdbootutil add-all-kernels failed. Falling back to standard initramfs tools (if any)."
+    # Do NOT return here; fall through to standard tools so we can
+    # still try update-initramfs/mkinitcpio/dracut on non-standard
+    # setups.
+  fi
+
+  # 2. Standard update-initramfs (Debian/Ubuntu)
   if command -v update-initramfs >/dev/null 2>&1 && [[ -d /etc/initramfs-tools ]]; then
     say "Updating initramfs via update-initramfs -u ..."
     if run update-initramfs -u; then
@@ -1889,6 +1903,7 @@ maybe_update_initramfs() {
     return 1
   fi
 
+  # 3. Standard mkinitcpio (Arch)
   if command -v mkinitcpio >/dev/null 2>&1; then
     say "Updating initramfs via mkinitcpio -P ..."
     if run mkinitcpio -P; then
@@ -1898,11 +1913,12 @@ maybe_update_initramfs() {
     return 1
   fi
 
+  # 4. Standard dracut (Fedora/RHEL/legacy openSUSE)
   if command -v dracut >/dev/null 2>&1; then
     say "Updating initramfs via dracut (--force) ..."
-    # On openSUSE and many dracut-based systems, overwriting an existing
-    # initramfs requires --force; without it, dracut will often refuse
-    # to update and silently leave the old image in place.
+    # On many dracut-based systems, overwriting an existing initramfs
+    # requires --force; without it, dracut will often refuse to update
+    # and silently leave the old image in place.
     if run dracut --force; then
       return 0
     fi
@@ -1910,7 +1926,7 @@ maybe_update_initramfs() {
     return 1
   fi
 
-  say "NOTE: No initramfs update tool detected (update-initramfs, mkinitcpio, dracut). Skipping."
+  say "NOTE: No initramfs update tool detected (sdbootutil, update-initramfs, mkinitcpio, dracut). Skipping."
   return 1
 }
 
