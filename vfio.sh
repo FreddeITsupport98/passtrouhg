@@ -772,6 +772,46 @@ detect_existing_vfio_report() {
     fi
   fi
 
+  # BLS / systemd-boot entries (for openSUSE and other BLS users)
+  local bls_dir
+  bls_dir="$(systemd_boot_entries_dir 2>/dev/null || true)"
+  if [[ -n "$bls_dir" ]]; then
+    say
+    say "-- Boot Loader Spec entries (IOMMU/VFIO params) --"
+    local f opts
+    shopt -s nullglob
+    for f in "$bls_dir"/*.conf; do
+      opts="$(grep -m1 -E '^options[[:space:]]+' "$f" 2>/dev/null | sed -E 's/^options[[:space:]]+//')"
+      opts="$(trim "${opts:-}")"
+      if [[ -z "$opts" ]]; then
+        print_kv "$(basename "$f")" "<no options line>"
+        continue
+      fi
+
+      local -a missing=()
+      if ! grep -qwE 'amd_iommu=on|intel_iommu=on' <<<"$opts"; then
+        missing+=("iommu_on")
+      fi
+      if ! grep -qw "iommu=pt" <<<"$opts"; then
+        missing+=("iommu_pt")
+      fi
+      # On openSUSE dracut systems, rd.driver.pre=vfio-pci is highly
+      # recommended, so we flag its absence separately.
+      if is_opensuse_like && command -v dracut >/dev/null 2>&1; then
+        if ! grep -qw "rd.driver.pre=vfio-pci" <<<"$opts"; then
+          missing+=("rd.driver.pre=vfio-pci")
+        fi
+      fi
+
+      if (( ${#missing[@]} == 0 )); then
+        print_kv "$(basename "$f")" "OK (IOMMU + VFIO params present)"
+      else
+        print_kv "$(basename "$f")" "WARN missing: ${missing[*]}"
+      fi
+    done
+    shopt -u nullglob
+  fi
+
   # Current device bindings
   say
   say "-- Current GPU/Audio bindings (lspci -nnk) --"
@@ -1384,6 +1424,18 @@ detect_bootloader() {
   # /etc/default/grub and be ignored at boot).
   if is_opensuse_like && [[ -r /etc/sysconfig/bootloader ]]; then
     if grep -qi 'LOADER_TYPE=.*grub2-bls' /etc/sysconfig/bootloader 2>/dev/null; then
+      echo "grub2-bls"
+      return 0
+    fi
+  fi
+  # Many openSUSE Tumbleweed systems use BLS while still declaring
+  # LOADER_TYPE="grub2-efi" in /etc/sysconfig/bootloader, with BLS
+  # actually enabled via GRUB_ENABLE_BLSCFG="true" in /etc/default/grub.
+  # Detect that configuration as grub2-bls as well so we follow the
+  # /etc/kernel/cmdline + sdbootutil path instead of legacy GRUB.
+  if is_opensuse_like && [[ -f /etc/default/grub ]]; then
+    # Many setups enable BLS via GRUB_ENABLE_BLSCFG="true" (or similar).
+    if grep -qi 'GRUB_ENABLE_BLSCFG=.*true' /etc/default/grub 2>/dev/null; then
       echo "grub2-bls"
       return 0
     fi
