@@ -1562,8 +1562,8 @@ systemd_boot_add_kernel_params() {
 
   # --- openSUSE / sdbootutil persistence layer ---
   # openSUSE (Tumbleweed / MicroOS / Leap with BLS) uses /etc/kernel/cmdline
-  # to generate Boot Loader Spec entries. We must edit this file AND run
-  # sdbootutil so settings are applied both now and after kernel updates.
+  # to generate Boot Loader Spec entries. We must edit this file AND rely on
+  # sdbootutil to regenerate the per-kernel entry .conf files.
   if is_opensuse_like && [[ -f /etc/kernel/cmdline ]]; then
     hdr "openSUSE Persistence Check"
     note "Detected /etc/kernel/cmdline on an openSUSE-like system. This is used to generate boot entries (GRUB2-BLS / systemd-boot)."
@@ -1624,13 +1624,20 @@ systemd_boot_add_kernel_params() {
 ' "$new_cmdline" > /etc/kernel/cmdline
       fi
       say "Updated /etc/kernel/cmdline for persistence."
-      # NOTE: We defer sdbootutil update-all-entries until AFTER a
-      # successful initramfs rebuild at the end of apply_configuration()
-      # to avoid a window where the bootloader demands rd.driver.pre=
-      # without the driver being present in the initramfs.
+      # NOTE: We defer sdbootutil add-all-kernels/update-all-entries
+      # until AFTER a successful initramfs rebuild at the end of
+      # apply_configuration() to avoid a window where the bootloader
+      # demands rd.driver.pre= without the driver being present in the
+      # initramfs.
     else
       say "/etc/kernel/cmdline already contains VFIO/IOMMU params."
     fi
+
+    # On openSUSE we intentionally STOP here and do not run the
+    # generic systemd-boot .conf editing logic below. sdbootutil
+    # owns /boot/loader/entries/*.conf; we only manipulate
+    # /etc/kernel/cmdline and let sdbootutil regenerate entries.
+    return 0
   fi
   # -----------------------------------------------
 
