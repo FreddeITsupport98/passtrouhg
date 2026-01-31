@@ -2256,23 +2256,22 @@ install_bootlog_dumper() {
   backup_file "$bin"
   backup_file "$unit"
 
-  write_file_atomic "$bin" 0755 "root:root" <<EOF
+  write_file_atomic "$bin" 0755 "root:root" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-USER_HOME="$home"
+USER_HOME="__VFIO_BOOT_USER_HOME__"
 DESKTOP_DIR="${USER_HOME}/Desktop"
 mkdir -p "${DESKTOP_DIR}" || true
 
 # Limit the log to the current boot and focus on kernel/systemd/VFIO messages.
-OUT="${DESKTOP_DIR}/vfio-boot-\$(date +%Y%m%d-%H%M%S).log"
+OUT="${DESKTOP_DIR}/vfio-boot-$(date +%Y%m%d-%H%M%S).log"
 {
-  echo "# VFIO boot log dump for \$(date -Is)"
-  echo "# Host: \$(hostname)  Kernel: \$(uname -r)"
+  echo "# VFIO boot log dump for $(date -Is)"
+  echo "# Host: $(hostname)  Kernel: $(uname -r)"
   echo
   journalctl -b -x |
-    sed -n '/kernel: \[    0.000000\]/,
-$ p' || true
+    sed -n '/kernel: \[    0.000000\]/,$ p' || true
 } >"$OUT" 2>&1 || true
 EOF
 
@@ -2288,6 +2287,13 @@ ExecStart=$bin
 [Install]
 WantedBy=multi-user.target
 EOF
+
+  # Replace placeholder with the actual user home path in the helper script.
+  if [[ -n "$home" ]]; then
+    if (( ! DRY_RUN )); then
+      sed -i "s#__VFIO_BOOT_USER_HOME__#$home#g" "$bin" || true
+    fi
+  fi
 
   if have_cmd systemctl; then
     run systemctl daemon-reload
