@@ -1238,7 +1238,7 @@ install_dracut_config() {
 #       without hard-forcing them as early critical drivers during initramfs
 #       boot. This reduces the risk of hard boot failures if VFIO is mis-
 #       configured while still making vfio* modules present for early binding.
-add_drivers+=" ${joined} "
+force_drivers+=" ${joined} "
 EOF
 
   say "Installed Dracut configuration to ensure early VFIO loading."
@@ -1572,7 +1572,7 @@ systemd_boot_add_kernel_params() {
     
     local cmdline_content
     cmdline_content="$(cat /etc/kernel/cmdline)"
-    local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt" ${GRUB_EXTRA_PARAMS:-})
+    local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt" "video=efifb:off" "video=vesafb:off" "initcall_blacklist=sysfb_init" ${GRUB_EXTRA_PARAMS:-})
     # If we know the exact vfio-pci.ids value for the selected guest GPU,
     # persist it into /etc/kernel/cmdline as well.
     if [[ -n "${CTX[guest_vfio_ids]:-}" ]]; then
@@ -1781,7 +1781,7 @@ print_manual_iommu_instructions() {
 
 grub_add_kernel_params() {
   # Merge standard params with any discovered extras (for example video=efifb:off).
-  local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt" ${GRUB_EXTRA_PARAMS:-})
+  local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt" "video=efifb:off" "video=vesafb:off" "initcall_blacklist=sysfb_init" ${GRUB_EXTRA_PARAMS:-})
   # If we know vfio-pci.ids for the selected guest GPU, also place it on
   # the GRUB cmdline so vfio-pci can bind in the initramfs.
   if [[ -n "${CTX[guest_vfio_ids]:-}" ]]; then
