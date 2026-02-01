@@ -2287,10 +2287,15 @@ OUT="${DESKTOP_DIR}/vfio-boot-$(date +%Y%m%d-%H%M%S).log"
 } >"$OUT" 2>&1 || true
 EOF
 
+  # Service: run as early as possible in the multi-user boot, before other
+  # multi-user units. This makes it effectively one of the first things that
+  # happens in that target.
   write_file_atomic "$unit" 0644 "root:root" <<EOF
 [Unit]
-Description=Dump VFIO boot log to user desktop
-After=multi-user.target
+Description=Dump VFIO boot log to user desktop (early in boot)
+DefaultDependencies=no
+After=local-fs.target systemd-journald.service
+Before=multi-user.target
 
 [Service]
 Type=oneshot
@@ -2312,7 +2317,7 @@ EOF
     run systemctl enable vfio-dump-boot-log.service || true
   fi
 
-  note "Boot log dumper installed. On each boot, a vfio-boot-*.log file will appear on ${home}/Desktop."
+  note "Boot log dumper installed. It will run early in boot, before multi-user.target is reached, and drop a vfio-boot-*.log file on ${home}/Desktop."
 }
 
 # Small helper to set KDE Plasma Wayland as the default SDDM session when desired.
