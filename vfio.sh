@@ -1597,6 +1597,20 @@ systemd_boot_add_kernel_params() {
     for p in "${params_to_add[@]}"; do
       new_cmdline="$(add_param_once "$new_cmdline" "$p")"
     done
+
+    # Hard-disable LSMs that commonly interfere with rollbacks on
+    # openSUSE Tumbleweed. Many Tumbleweed rollbacks + SELinux or
+    # AppArmor combinations can cause subtle boot issues, and this
+    # helper is not LSM-policy aware. We therefore normalize the
+    # cmdline by removing security=selinux/apparmor and explicit
+    # "selinux=1"/"apparmor=1", and force both selinux=0 and
+    # apparmor=0.
+    new_cmdline="$(remove_param_all "$new_cmdline" "security=selinux")"
+    new_cmdline="$(remove_param_all "$new_cmdline" "security=apparmor")"
+    new_cmdline="$(remove_param_all "$new_cmdline" "selinux=1")"
+    new_cmdline="$(remove_param_all "$new_cmdline" "apparmor=1")"
+    new_cmdline="$(add_param_once "$new_cmdline" "selinux=0")"
+    new_cmdline="$(add_param_once "$new_cmdline" "apparmor=0")"
     
     # On openSUSE with dracut, rd.driver.pre=vfio-pci is effectively
     # required for reliable GPU binding because the graphics driver is
@@ -1819,12 +1833,24 @@ grub_add_kernel_params() {
   local current new
   current="$(grub_read_cmdline "$key")"
   new="$current"
-
+ 
   local p
   for p in "${params_to_add[@]}"; do
     new="$(add_param_once "$new" "$p")"
   done
 
+  # Hard-disable LSMs (SELinux/AppArmor) on GRUB-based systems as
+  # well to match the openSUSE BLS path. Remove any existing
+  # SELinux/AppArmor enabling params and force selinux=0 and
+  # apparmor=0 so the kernel does not try to bring these up on
+  # rolled-back roots.
+  new="$(remove_param_all "$new" "security=selinux")"
+  new="$(remove_param_all "$new" "security=apparmor")"
+  new="$(remove_param_all "$new" "selinux=1")"
+  new="$(remove_param_all "$new" "apparmor=1")"
+  new="$(add_param_once "$new" "selinux=0")"
+  new="$(add_param_once "$new" "apparmor=0")"
+ 
   say
   hdr "Advanced (optional): ACS override"
   note "ACS override can sometimes split up IOMMU groups on motherboards that don't expose proper isolation."
