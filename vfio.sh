@@ -1598,19 +1598,28 @@ systemd_boot_add_kernel_params() {
       new_cmdline="$(add_param_once "$new_cmdline" "$p")"
     done
 
-    # Hard-disable LSMs that commonly interfere with rollbacks on
-    # openSUSE Tumbleweed. Many Tumbleweed rollbacks + SELinux or
-    # AppArmor combinations can cause subtle boot issues, and this
-    # helper is not LSM-policy aware. We therefore normalize the
-    # cmdline by removing security=selinux/apparmor and explicit
-    # "selinux=1"/"apparmor=1", and force both selinux=0 and
-    # apparmor=0.
-    new_cmdline="$(remove_param_all "$new_cmdline" "security=selinux")"
-    new_cmdline="$(remove_param_all "$new_cmdline" "security=apparmor")"
-    new_cmdline="$(remove_param_all "$new_cmdline" "selinux=1")"
-    new_cmdline="$(remove_param_all "$new_cmdline" "apparmor=1")"
-    new_cmdline="$(add_param_once "$new_cmdline" "selinux=0")"
-    new_cmdline="$(add_param_once "$new_cmdline" "apparmor=0")"
+    # Optional: disable SELinux/AppArmor at the kernel level.
+    # On openSUSE Tumbleweed with Btrfs rollbacks, enabling SELinux
+    # or AppArmor on a rolled-back root can easily cause confusing
+    # boot failures (desktop spin+reboot, services denied writes on
+    # read-only or mislabelled subvolumes, etc.). This helper is
+    # not LSM-policy aware, so the safest default for passthrough
+    # debugging is to turn those off via selinux=0 apparmor=0.
+    say
+    hdr "Kernel security modules (SELinux/AppArmor)"
+    note "On openSUSE Tumbleweed with snapshot rollbacks, SELinux or AppArmor on the rolled-back root can cause subtle boot issues."
+    note "Examples: desktop spinning then rebooting, services failing because /etc or /var look read-only or mislabelled after rollback."
+    note "This helper does not manage SELinux/AppArmor policy. For predictable VFIO testing it is safest to disable them via kernel params."
+    if prompt_yn "Disable SELinux and AppArmor in kernel parameters (add selinux=0 apparmor=0 and remove security=selinux/apparmor)?" Y "Kernel security modules"; then
+      new_cmdline="$(remove_param_all "$new_cmdline" "security=selinux")"
+      new_cmdline="$(remove_param_all "$new_cmdline" "security=apparmor")"
+      new_cmdline="$(remove_param_all "$new_cmdline" "selinux=1")"
+      new_cmdline="$(remove_param_all "$new_cmdline" "apparmor=1")"
+      new_cmdline="$(add_param_once "$new_cmdline" "selinux=0")"
+      new_cmdline="$(add_param_once "$new_cmdline" "apparmor=0")"
+    else
+      note "Keeping existing SELinux/AppArmor kernel parameters as-is. If you see spin+reboot or permission errors after rollback, consider rerunning with this option."
+    fi
     
     # On openSUSE with dracut, rd.driver.pre=vfio-pci is effectively
     # required for reliable GPU binding because the graphics driver is
@@ -1839,17 +1848,22 @@ grub_add_kernel_params() {
     new="$(add_param_once "$new" "$p")"
   done
 
-  # Hard-disable LSMs (SELinux/AppArmor) on GRUB-based systems as
-  # well to match the openSUSE BLS path. Remove any existing
-  # SELinux/AppArmor enabling params and force selinux=0 and
-  # apparmor=0 so the kernel does not try to bring these up on
-  # rolled-back roots.
-  new="$(remove_param_all "$new" "security=selinux")"
-  new="$(remove_param_all "$new" "security=apparmor")"
-  new="$(remove_param_all "$new" "selinux=1")"
-  new="$(remove_param_all "$new" "apparmor=1")"
-  new="$(add_param_once "$new" "selinux=0")"
-  new="$(add_param_once "$new" "apparmor=0")"
+  # Optional: disable SELinux/AppArmor on GRUB-based systems as
+  # well to match the openSUSE BLS path.
+  say
+  hdr "Kernel security modules (SELinux/AppArmor)"
+  note "On systems that use Btrfs rollbacks (like openSUSE), SELinux/AppArmor combined with an older root snapshot can cause boot issues."
+  note "This helper focuses on VFIO and does not manage LSM policy, so for stable passthrough testing it is often safest to turn them off."
+  if prompt_yn "Disable SELinux and AppArmor in GRUB kernel parameters (selinux=0 apparmor=0)?" Y "Kernel security modules"; then
+    new="$(remove_param_all "$new" "security=selinux")"
+    new="$(remove_param_all "$new" "security=apparmor")"
+    new="$(remove_param_all "$new" "selinux=1")"
+    new="$(remove_param_all "$new" "apparmor=1")"
+    new="$(add_param_once "$new" "selinux=0")"
+    new="$(add_param_once "$new" "apparmor=0")"
+  else
+    note "Keeping existing SELinux/AppArmor kernel parameters in GRUB. If rollbacks cause boot loops or denials, rerun and enable this option."
+  fi
  
   say
   hdr "Advanced (optional): ACS override"
