@@ -2396,13 +2396,16 @@ if journalctl -b -1 >/dev/null 2>&1; then
 fi
 EOF
 
-  # Service: run after multi-user.target so we capture as much of the
-  # boot as possible (display manager, services, etc.), while still
-  # running automatically on each boot.
+  # Service: run early in systemd boot, after basic initialization
+  # but before multi-user.target. This ensures we always capture
+  # VFIO-relevant boot logs even if the graphical/session layer
+  # misbehaves or triggers a reboot.
   write_file_atomic "$unit" 0644 "root:root" <<EOF
 [Unit]
 Description=Dump VFIO boot logs (current and previous boot)
-After=multi-user.target systemd-journald.service
+DefaultDependencies=no
+After=local-fs.target systemd-journald.service
+Before=multi-user.target
 
 [Service]
 Type=oneshot
