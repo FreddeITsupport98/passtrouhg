@@ -1142,6 +1142,19 @@ pipewire_sinks_discover() {
 
 # ---------------- Writes ----------------
 
+# Return 0 if the core vfio-pci module is available for this kernel.
+# This is used to avoid adding rd.driver.pre=vfio-pci on systems where
+# the module is not built at all (which would otherwise cause dracut
+# to emit "FATAL: Module vfio-pci not found" during early boot).
+vfio_pci_available() {
+  if command -v modinfo >/dev/null 2>&1; then
+    modinfo vfio-pci >/dev/null 2>&1
+    return $?
+  fi
+  # If modinfo is missing, be conservative and assume not available.
+  return 1
+}
+
 # Discover which VFIO modules actually exist for the running kernel.
 # This avoids asking Dracut or modules-load for modules that are not built
 # (for example vfio_virqfd on some Fedora kernels).
@@ -1589,7 +1602,10 @@ systemd_boot_add_kernel_params() {
     # required for reliable GPU binding because the graphics driver is
     # pulled in very early from the initramfs. Treat it as strongly
     # recommended here (default YES) instead of a hidden "advanced" knob.
-    if command -v dracut >/dev/null 2>&1; then
+    # However, if the vfio-pci module is not present for this kernel,
+    # forcing rd.driver.pre=vfio-pci would just cause dracut to fail a
+    # modprobe very early in boot, so we skip it in that case.
+    if command -v dracut >/dev/null 2>&1 && vfio_pci_available; then
       say
       hdr "Initramfs early VFIO driver (recommended on openSUSE)"
       note "On openSUSE (dracut-based), rd.driver.pre=vfio-pci helps vfio-pci claim the guest GPU before amdgpu/nvidia/i915 inside the initramfs."
@@ -1600,6 +1616,8 @@ systemd_boot_add_kernel_params() {
       else
         note "You chose to skip rd.driver.pre=vfio-pci; passthrough may fail if the initramfs grabs the GPU first."
       fi
+    elif command -v dracut >/dev/null 2>&1; then
+      note "Skipping rd.driver.pre=vfio-pci because vfio-pci module is not available for this kernel."
     fi
     
     # Optional: disable quiet/splash and show verbose boot logs while
@@ -1838,7 +1856,7 @@ grub_add_kernel_params() {
   # the race against amdgpu/nvidia/i915 when those are pulled into the
   # initramfs. It is still optional because misconfiguration can affect
   # boot if your host depends on those drivers very early.
-  if command -v dracut >/dev/null 2>&1; then
+  if command -v dracut >/dev/null 2>&1 && vfio_pci_available; then
     say
     # On openSUSE (dracut-based), rd.driver.pre=vfio-pci is strongly
     # recommended; elsewhere we keep it as an advanced optional setting.
@@ -1862,6 +1880,8 @@ grub_add_kernel_params() {
         CTX[rd_driver_pre]=1
       fi
     fi
+  elif command -v dracut >/dev/null 2>&1; then
+    note "Skipping rd.driver.pre=vfio-pci because vfio-pci module is not available for this kernel."
   fi
 
   # Safety: do not silently rewrite if nothing changed.
