@@ -2352,7 +2352,14 @@ EOF
     run systemctl enable vfio-dump-boot-log.service || true
   fi
 
-  note "Boot log dumper installed. It will run early in boot, before multi-user.target is reached, and drop a vfio-boot-*.log file on ${home}/Desktop."
+  # Also run the dumper once immediately so you always get a fresh
+  # vfio-boot-*.log for the CURRENT boot, even right after a
+  # Btrfs snapshot rollback.
+  if (( ! DRY_RUN )); then
+    run "$bin" || true
+  fi
+
+  note "Boot log dumper installed. It will run early in boot, before multi-user.target is reached, and drop vfio-boot-*.log files under ${home}/Desktop/vfio-boot-logs/."
 }
 
 # Small helper to set KDE Plasma Wayland as the default SDDM session when desired.
