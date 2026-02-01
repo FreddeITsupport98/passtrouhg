@@ -2262,8 +2262,14 @@ install_bootlog_dumper() {
   home="$(getent passwd "$user" | cut -d: -f6)"
   [[ -n "$home" && -d "$home" ]] || return 0
 
-  local bin="/usr/local/bin/vfio-dump-boot-log.sh"
+  # Place the helper script under the user's home (on /home), so it
+  # survives Btrfs root snapshot rollbacks. Only the small systemd
+  # unit lives on the root filesystem.
+  local bin_dir="$home/.local/bin"
+  local bin="$bin_dir/vfio-dump-boot-log.sh"
   local unit="/etc/systemd/system/vfio-dump-boot-log.service"
+
+  mkdir -p "$bin_dir"
 
   backup_file "$bin"
   backup_file "$unit"
