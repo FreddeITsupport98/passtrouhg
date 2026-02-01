@@ -2301,6 +2301,18 @@ set -euo pipefail
 USER_HOME="__VFIO_BOOT_USER_HOME__"
 DESKTOP_DIR="${USER_HOME}/Desktop"
 
+# Try to detect the current Btrfs root subvolume/snapshot from the
+# kernel cmdline so logs are snapshot-aware.
+CMDLINE="$(cat /proc/cmdline 2>/dev/null || true)"
+SNAP_SUBVOL=""
+SNAP_ID=""
+if [ -n "$CMDLINE" ]; then
+  SNAP_SUBVOL="$(printf '%s\n' "$CMDLINE" | sed -n 's/.*rootflags=[^ ]*subvol=\([^ ,]*\).*/\1/p')"
+  if [ -n "$SNAP_SUBVOL" ]; then
+    SNAP_ID="$(printf '%s\n' "$SNAP_SUBVOL" | sed -n 's#^.*/@/.snapshots/\([0-9]\+\)/snapshot.*#\1#p')"
+  fi
+fi
+
 # Organize logs under a dedicated tree by date to avoid clutter and
 # make it easy to browse: Desktop/vfio-boot-logs/YYYY/MM/DD/
 LOG_ROOT="${DESKTOP_DIR}/vfio-boot-logs"
@@ -2314,6 +2326,8 @@ OUT="${LOG_DIR}/vfio-boot-$(date +%H%M%S).log"
 {
   echo "# VFIO boot log dump for $(date -Is)"
   echo "# Host: $(hostname)  Kernel: $(uname -r)"
+  echo "# Root subvolume: ${SNAP_SUBVOL:-<unknown>}"
+  [ -n "$SNAP_ID" ] && echo "# Snapshot ID: ${SNAP_ID}"
   echo
   echo "# Log directory: ${LOG_DIR}"
   echo
