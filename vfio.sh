@@ -2276,14 +2276,15 @@ USER_HOME="__VFIO_BOOT_USER_HOME__"
 DESKTOP_DIR="${USER_HOME}/Desktop"
 mkdir -p "${DESKTOP_DIR}" || true
 
-# Limit the log to the current boot and focus on kernel/systemd/VFIO messages.
+# Dump as much information as possible for the current boot, including
+# early failures, kernel messages, and systemd unit errors.
 OUT="${DESKTOP_DIR}/vfio-boot-$(date +%Y%m%d-%H%M%S).log"
 {
   echo "# VFIO boot log dump for $(date -Is)"
   echo "# Host: $(hostname)  Kernel: $(uname -r)"
   echo
-  journalctl -b -x |
-    sed -n '/kernel: \[    0.000000\]/,$ p' || true
+  # Full journal for this boot, no pager, with explanatory text.
+  journalctl -b -x -a --no-pager || true
 } >"$OUT" 2>&1 || true
 EOF
 
