@@ -2396,16 +2396,23 @@ if journalctl -b -1 >/dev/null 2>&1; then
 fi
 EOF
 
-  # Service: run early in systemd boot, after basic initialization
-  # but before multi-user.target. This ensures we always capture
-  # VFIO-relevant boot logs even if the graphical/session layer
-  # misbehaves or triggers a reboot.
+  # Service: run as early as is reasonably safe, after local filesystems
+  # and journald are up, but before basic.target and any display manager.
+  # This follows the constraints you outlined: no default dependencies,
+  # ordered right after disk mount, and ahead of graphics.
   write_file_atomic "$unit" 0644 "root:root" <<EOF
 [Unit]
-Description=Dump VFIO boot logs (current and previous boot)
+Description=VFIO Early Boot Log Dumper (current and previous boot)
+# Disable standard dependencies so we don't wait for network, timers, etc.
 DefaultDependencies=no
+
+# START CONDITION: need local filesystems and journald so we can read the
+# journal and write logs to the Desktop on /home.
 After=local-fs.target systemd-journald.service
-Before=multi-user.target
+
+# STOP CONDITION: ensure this runs before basic system + display manager.
+Before=sysinit.target basic.target display-manager.service plymouth-start.service
+Conflicts=shutdown.target
 
 [Service]
 Type=oneshot
@@ -2610,6 +2617,8 @@ generate_rollback_script() {
     "$BIND_SCRIPT"
     "$AUDIO_SCRIPT"
     "$SYSTEMD_UNIT"
+    "/etc/systemd/system/vfio-dump-boot-log.service"
+    "/home/${SUDO_USER:-root}/.local/bin/vfio-dump-boot-log.sh"
     "$CONF_FILE"
     "$DRACUT_VFIO_CONF"
   )
