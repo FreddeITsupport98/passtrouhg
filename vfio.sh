@@ -2322,9 +2322,13 @@ mkdir -p "${LOG_DIR}" || true
 
 # Dump as much information as possible for the current boot, including
 # early failures, kernel messages, and systemd unit errors.
-OUT="${LOG_DIR}/vfio-boot-$(date +%H%M%S).log"
+TS="$(date +%H%M%S)"
+OUT_CUR="${LOG_DIR}/vfio-boot-${TS}-current.log"
+OUT_PREV="${LOG_DIR}/vfio-boot-${TS}-previous.log"
+
+# Current boot log
 {
-  echo "# VFIO boot log dump for $(date -Is)"
+  echo "# VFIO boot log dump for $(date -Is) (current boot)"
   echo "# Host: $(hostname)  Kernel: $(uname -r)"
   echo "# Root subvolume: ${SNAP_SUBVOL:-<unknown>}"
   [ -n "$SNAP_ID" ] && echo "# Snapshot ID: ${SNAP_ID}"
@@ -2333,18 +2337,32 @@ OUT="${LOG_DIR}/vfio-boot-$(date +%H%M%S).log"
   echo
   # Full journal for this boot, no pager, with explanatory text.
   journalctl -b -x -a --no-pager || true
-} >"$OUT" 2>&1 || true
+} >"$OUT_CUR" 2>&1 || true
+
+# Previous boot log (if available). This is particularly useful when
+# the previous boot crashed or rebooted unexpectedly; we can inspect
+# it after the next successful boot.
+if journalctl -b -1 >/dev/null 2>&1; then
+  {
+    echo "# VFIO boot log dump for $(date -Is) (previous boot)"
+    echo "# Host: $(hostname)  Kernel: $(uname -r)"
+    echo "# Root subvolume: ${SNAP_SUBVOL:-<unknown>}"
+    [ -n "$SNAP_ID" ] && echo "# Snapshot ID (current): ${SNAP_ID}"
+    echo
+    echo "# Log directory: ${LOG_DIR}"
+    echo
+    journalctl -b -1 -x -a --no-pager || true
+  } >"$OUT_PREV" 2>&1 || true
+fi
 EOF
 
-  # Service: run as early as possible in the multi-user boot, before other
-  # multi-user units. This makes it effectively one of the first things that
-  # happens in that target.
+  # Service: run after multi-user.target so we capture as much of the
+  # boot as possible (display manager, services, etc.), while still
+  # running automatically on each boot.
   write_file_atomic "$unit" 0644 "root:root" <<EOF
 [Unit]
-Description=Dump VFIO boot log to user desktop (early in boot)
-DefaultDependencies=no
-After=local-fs.target systemd-journald.service
-Before=multi-user.target
+Description=Dump VFIO boot logs (current and previous boot)
+After=multi-user.target systemd-journald.service
 
 [Service]
 Type=oneshot
