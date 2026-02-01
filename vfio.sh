@@ -1658,6 +1658,20 @@ systemd_boot_add_kernel_params() {
       new_cmdline="$(add_param_once "$new_cmdline" "loglevel=7")"
       verbose_persist=1
     fi
+
+    # Optional: boot into multi-user.target (text mode) for VFIO debugging.
+    # This replaces the default graphical target with a console-only
+    # environment so that failures in the desktop stack cannot immediately
+    # trigger a reboot loop. You can later remove this by running the
+    # script with --reset or manually deleting systemd.unit=multi-user.target
+    # from /etc/kernel/cmdline.
+    say
+    hdr "Boot target (persistence, optional)"
+    note "If your VFIO snapshot reboots as soon as the graphical desktop starts, it can be useful to boot only into text mode (multi-user.target)."
+    note "This makes the system stop at a console login so you can inspect logs without the display manager running."
+    if prompt_yn "Force the default boot target to multi-user.target (text mode) for now?" N "Boot target (persistence)"; then
+      new_cmdline="$(add_param_once "$new_cmdline" "systemd.unit=multi-user.target")"
+    fi
     
     # ACS Override check for cmdline file
     if prompt_yn "Enable ACS override in /etc/kernel/cmdline (persistence)?" N "Boot options (persistence)"; then
@@ -1888,6 +1902,20 @@ grub_add_kernel_params() {
     new="$(remove_param_all "$new" "splash=silent")"
     new="$(add_param_once "$new" "systemd.show_status=1")"
     new="$(add_param_once "$new" "loglevel=7")"
+  fi
+
+  # Optional: boot into multi-user.target (text mode) for VFIO debugging.
+  # This replaces the default graphical target with a console-only
+  # environment so that failures in the desktop stack cannot immediately
+  # trigger a reboot loop. You can later remove this by running the
+  # script with --reset or manually deleting systemd.unit=multi-user.target
+  # from your GRUB kernel cmdline.
+  say
+  hdr "Boot target (optional)"
+  note "If your VFIO snapshot reboots as soon as the graphical desktop starts, it can be useful to boot only into text mode (multi-user.target)."
+  note "This makes the system stop at a console login so you can inspect logs without the display manager running."
+  if prompt_yn "Force the default boot target to multi-user.target (text mode) for now?" N "Boot target"; then
+    new="$(add_param_once "$new" "systemd.unit=multi-user.target")"
   fi
 
   # Dracut-specific early driver ordering (advanced)
