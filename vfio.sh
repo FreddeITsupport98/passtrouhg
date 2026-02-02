@@ -1455,6 +1455,45 @@ grub_write_cmdline_in_place() {
   fi
 }
 
+# Run a best-effort GRUB syntax check on the generated grub.cfg, if tooling
+# is available. This helps catch situations where an edited cmdline or script
+# causes lexer errors at boot ("lexer.c:352: syntax error").
+#
+# We never abort on failure here; we only print a warning so the user knows
+# that GRUB reported a problem and can fix it or roll back a snapshot.
+maybe_check_grub_cfg() {
+  local cfg=""
+
+  # Locate grub.cfg in common locations.
+  if [[ -f /boot/grub2/grub.cfg ]]; then
+    cfg="/boot/grub2/grub.cfg"
+  elif [[ -f /boot/grub/grub.cfg ]]; then
+    cfg="/boot/grub/grub.cfg"
+  fi
+
+  [[ -n "$cfg" ]] || return 0
+
+  # Prefer grub2-script-check if present.
+  if command -v grub2-script-check >/dev/null 2>&1; then
+    if grub2-script-check "$cfg" >/dev/null 2>&1; then
+      return 0
+    fi
+    note "GRUB syntax check reported issues in $cfg (boot menu may show lexer errors)."
+    return 0
+  fi
+
+  # Some distros ship grub-script-check instead.
+  if command -v grub-script-check >/dev/null 2>&1; then
+    if grub-script-check "$cfg" >/dev/null 2>&1; then
+      return 0
+    fi
+    note "GRUB syntax check reported issues in $cfg (boot menu may show lexer errors)."
+    return 0
+  fi
+
+  return 0
+}
+
 add_param_once() {
   local cmdline="$1" param="$2"
   # token match (space or start/end). cmdline is treated as space-separated.
@@ -2998,6 +3037,10 @@ reset_vfio_all() {
       fi
       [[ -n "$out" ]] && run grub2-mkconfig -o "$out" || true
     fi
+
+    # After regenerating grub.cfg, run a best-effort syntax check so we can
+    # warn the user if GRub would show lexer errors at boot.
+    maybe_check_grub_cfg
   fi
 
   # Always rebuild initramfs at end of reset (so removed blacklists/modules are fully gone on next boot).
