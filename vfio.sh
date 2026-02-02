@@ -1907,7 +1907,11 @@ systemd_boot_add_kernel_params() {
     
     local cmdline_content
     cmdline_content="$(cat /etc/kernel/cmdline)"
-    local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt" "video=efifb:off" "video=vesafb:off" "initcall_blacklist=sysfb_init" ${GRUB_EXTRA_PARAMS:-})
+    # Base params: IOMMU and any extras discovered earlier. Framebuffer
+    # mitigation (video=efifb:off, etc.) is handled by a dedicated prompt
+    # below so users understand why it is needed and can skip it if they
+    # know their boot VGA path is already safe.
+    local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt" ${GRUB_EXTRA_PARAMS:-})
     # If we know the exact vfio-pci.ids value for the selected guest GPU,
     # persist it into /etc/kernel/cmdline as well.
     if [[ -n "${CTX[guest_vfio_ids]:-}" ]]; then
@@ -1919,6 +1923,24 @@ systemd_boot_add_kernel_params() {
     for p in "${params_to_add[@]}"; do
       new_cmdline="$(add_param_once "$new_cmdline" "$p")"
     done
+
+    # Optional: boot framebuffer / Boot VGA mitigation. On many systems the
+    # EFI/simple framebuffer can "pin" the guest GPU memory and prevent
+    # reliable VFIO binding (symptoms include black screens, "Header type 127",
+    # or hangs when starting the VM). These parameters tell the kernel not
+    # to use those early framebuffers for the console.
+    say
+    hdr "Boot framebuffer (Boot VGA) mitigation (optional)"
+    note "On some setups the EFI/simple framebuffer (efifb/vesafb/sysfb) can lock your guest GPU and cause black screens or hangs when using VFIO."
+    note "If you pass your primary/Boot VGA dGPU to a VM, disabling these framebuffers is often recommended."
+    note "If your guest GPU is a secondary card and the host only uses an iGPU or a different card for the boot console, you may not need this."
+    if prompt_yn "Add video=efifb:off video=vesafb:off initcall_blacklist=sysfb_init to /etc/kernel/cmdline?" Y "Boot framebuffer mitigation"; then
+      new_cmdline="$(add_param_once "$new_cmdline" "video=efifb:off")"
+      new_cmdline="$(add_param_once "$new_cmdline" "video=vesafb:off")"
+      new_cmdline="$(add_param_once "$new_cmdline" "initcall_blacklist=sysfb_init")"
+    else
+      note "Keeping existing framebuffer settings. If you later see black screens or "Header type 127" when starting the VM, rerun and enable this option."
+    fi
 
     # Optional: disable SELinux/AppArmor at the kernel level.
     # On openSUSE Tumbleweed with Btrfs rollbacks, enabling SELinux
@@ -2158,8 +2180,10 @@ print_manual_iommu_instructions() {
 }
 
 grub_add_kernel_params() {
-  # Merge standard params with any discovered extras (for example video=efifb:off).
-  local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt" "video=efifb:off" "video=vesafb:off" "initcall_blacklist=sysfb_init" ${GRUB_EXTRA_PARAMS:-})
+  # Merge standard params with any discovered extras. Framebuffer mitigation
+  # (video=efifb:off, etc.) is offered via an explicit prompt below so that
+  # users understand why it is being added.
+  local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt" ${GRUB_EXTRA_PARAMS:-})
   # If we know vfio-pci.ids for the selected guest GPU, also place it on
   # the GRUB cmdline so vfio-pci can bind in the initramfs.
   if [[ -n "${CTX[guest_vfio_ids]:-}" ]]; then
@@ -2185,6 +2209,23 @@ grub_add_kernel_params() {
     new="$(add_param_once "$new" "$p")"
   done
 
+  # Optional: boot framebuffer / Boot VGA mitigation for GRUB systems.
+  # This mirrors the openSUSE /etc/kernel/cmdline behavior: we can
+  # disable efifb/vesafb/sysfb to avoid early framebuffers pinning the
+  # guest GPU.
+  say
+  hdr "Boot framebuffer (Boot VGA) mitigation (optional)"
+  note "On some systems, early EFI/vesa framebuffers can keep the guest GPU busy and interfere with VFIO (black screens, hangs, \"Header type 127\")."
+  note "If you are passing your primary dGPU (Boot VGA) to a VM, disabling those framebuffers is usually recommended."
+  note "If the host only uses an iGPU or a different card for the console, you may not need this."
+  if prompt_yn "Add video=efifb:off video=vesafb:off initcall_blacklist=sysfb_init to GRUB kernel parameters?" Y "Boot framebuffer mitigation"; then
+    new="$(add_param_once "$new" "video=efifb:off")"
+    new="$(add_param_once "$new" "video=vesafb:off")"
+    new="$(add_param_once "$new" "initcall_blacklist=sysfb_init")"
+  else
+    note "Leaving framebuffer parameters unchanged. If you later hit black screens at VM start, rerun and enable this option."
+  fi
+ 
   # Optional: disable SELinux/AppArmor on GRUB-based systems as
   # well to match the openSUSE BLS path.
   say
