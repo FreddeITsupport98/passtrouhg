@@ -2879,9 +2879,15 @@ reset_vfio_all() {
 
   local grub_changed=0
 
-  # Remove GRUB kernel parameters added by this script
-  if [[ -f /etc/default/grub ]]; then
-    if prompt_yn "Also remove IOMMU/VFIO kernel params from /etc/default/grub (amd_iommu/intel_iommu, iommu=pt, pcie_acs_override)?" Y "Reset: boot options"; then
+  # Detect active bootloader so we do not try to "classic GRUB"-reset on
+  # systems that actually use systemd-boot/GRUB2-BLS with /etc/kernel/cmdline.
+  local reset_bl
+  reset_bl="$(detect_bootloader)"
+
+  # Remove GRUB kernel parameters added by this script (classic GRUB only).
+  # On GRUB2-BLS/systemd-boot setups, we instead operate on /etc/kernel/cmdline.
+  if [[ "$reset_bl" == "grub" && -f /etc/default/grub ]]; then
+    if prompt_yn "Also remove VFIO-related kernel params from /etc/default/grub (IOMMU, ACS override, rd.driver.pre, SELinux/AppArmor, verbosity, multi-user.target)?" Y "Reset: boot options"; then
       backup_file /etc/default/grub
 
       local key current new
@@ -2889,43 +2895,72 @@ reset_vfio_all() {
       current="$(grub_read_cmdline "$key")"
       new="$current"
 
+      # Core IOMMU / ACS params
       new="$(remove_param_all "$new" "amd_iommu=on")"
       new="$(remove_param_all "$new" "intel_iommu=on")"
       new="$(remove_param_all "$new" "iommu=pt")"
       new="$(remove_param_all "$new" "pcie_acs_override=downstream,multifunction")"
+      # Initramfs / VFIO ordering
+      new="$(remove_param_all "$new" "rd.driver.pre=vfio-pci")"
+      # LSM knobs we may have added
+      new="$(remove_param_all "$new" "selinux=0")"
+      new="$(remove_param_all "$new" "apparmor=0")"
+      # Boot verbosity and target overrides
+      new="$(remove_param_all "$new" "systemd.show_status=1")"
+      new="$(remove_param_all "$new" "loglevel=7")"
+      new="$(remove_param_all "$new" "systemd.unit=multi-user.target")"
+      # Framebuffer / sysfb related tweaks
+      new="$(remove_param_all "$new" "video=efifb:off")"
+      new="$(remove_param_all "$new" "video=vesafb:off")"
+      new="$(remove_param_all "$new" "initcall_blacklist=sysfb_init")"
 
       if [[ "$(trim "$new")" != "$(trim "$current")" ]]; then
         grub_write_cmdline_in_place "$key" "$new"
         grub_changed=1
       else
-        note "No matching VFIO/IOMMU params found in GRUB cmdline; leaving it unchanged."
+        note "No matching VFIO/IOMMU-related params found in GRUB cmdline; leaving it unchanged."
       fi
     fi
   fi
 
   # On openSUSE-like systems using systemd-boot/sdbootutil, also offer to
   # remove VFIO/IOMMU params from /etc/kernel/cmdline so future kernel
-  # entries stop inheriting them.
+  # entries stop inheriting them. This path is also used for GRUB2-BLS.
   if is_opensuse_like && [[ -f /etc/kernel/cmdline ]]; then
-    if prompt_yn "Also remove IOMMU/VFIO kernel params from /etc/kernel/cmdline (amd_iommu/intel_iommu, iommu=pt, pcie_acs_override)?" Y "Reset: boot options (persistence)"; then
+    if prompt_yn "Also remove VFIO-related kernel params from /etc/kernel/cmdline (IOMMU, ACS override, rd.driver.pre, SELinux/AppArmor, verbosity, multi-user.target)?" Y "Reset: boot options (persistence)"; then
       backup_file /etc/kernel/cmdline
       local kcur knew
       kcur="$(cat /etc/kernel/cmdline 2>/dev/null || true)"
       knew="$kcur"
+      # Core IOMMU / ACS params
       knew="$(remove_param_all "$knew" "amd_iommu=on")"
       knew="$(remove_param_all "$knew" "intel_iommu=on")"
       knew="$(remove_param_all "$knew" "iommu=pt")"
       knew="$(remove_param_all "$knew" "pcie_acs_override=downstream,multifunction")"
+      # Initramfs / VFIO ordering
+      knew="$(remove_param_all "$knew" "rd.driver.pre=vfio-pci")"
+      # LSM knobs we may have added
+      knew="$(remove_param_all "$knew" "selinux=0")"
+      knew="$(remove_param_all "$knew" "apparmor=0")"
+      # Boot verbosity and target overrides
+      knew="$(remove_param_all "$knew" "systemd.show_status=1")"
+      knew="$(remove_param_all "$knew" "loglevel=7")"
+      knew="$(remove_param_all "$knew" "systemd.unit=multi-user.target")"
+      # Framebuffer / sysfb related tweaks
+      knew="$(remove_param_all "$knew" "video=efifb:off")"
+      knew="$(remove_param_all "$knew" "video=vesafb:off")"
+      knew="$(remove_param_all "$knew" "initcall_blacklist=sysfb_init")"
+
       if [[ "$(trim "$knew")" != "$(trim "$kcur")" ]]; then
         if (( ! DRY_RUN )); then
           printf '%s
-' "$knew" >/etc/kernel/cmdline
+|' "$knew" >/etc/kernel/cmdline
         fi
-        # Ensure BLS/systemd-boot entries are regenerated without the
-        # VFIO/IOMMU params on openSUSE.
+        # Ensure BLS/systemd-boot entries are regenerated without these
+        # params on openSUSE.
         opensuse_sdbootutil_update_all_entries
       else
-        note "No matching VFIO/IOMMU params found in /etc/kernel/cmdline; leaving it unchanged."
+        note "No matching VFIO/IOMMU-related params found in /etc/kernel/cmdline; leaving it unchanged."
       fi
     fi
   fi
