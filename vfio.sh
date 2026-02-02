@@ -1578,8 +1578,15 @@ opensuse_sdbootutil_update_all_entries() {
   if ! have_cmd sdbootutil; then
     return 0
   fi
-  say "Updating Boot Loader Spec entries via: sdbootutil update-all-entries"
-  run sdbootutil update-all-entries
+  say "Updating Boot Loader Spec entries via: sdbootutil update-all-entries (errors will be ignored by this helper)"
+  # Call sdbootutil directly and silence its stdout/stderr to avoid leaking
+  # internal sed errors or similar implementation details to the user.
+  # If it fails, we only emit a soft note instead of aborting reset.
+  if sdbootutil update-all-entries >/dev/null 2>&1; then
+    return 0
+  fi
+  note "sdbootutil update-all-entries reported an error; boot entries may still reference older parameters or initrds."
+  return 0
 }
 
 # Safely rewrite the options line for a single systemd-boot entry.
