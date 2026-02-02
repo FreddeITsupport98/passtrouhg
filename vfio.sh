@@ -689,26 +689,61 @@ self_test() {
 
 detect_existing_vfio_report() {
   say
-  say "==== Existing VFIO / Passthrough Detection Report ===="
+  if (( ENABLE_COLOR )); then
+    say "${C_CYAN}${C_BOLD}==== Existing VFIO / Passthrough Detection Report ==== ${C_RESET}"
+  else
+    say "==== Existing VFIO / Passthrough Detection Report ===="
+  fi
 
   # Basic host state
-  print_kv "Kernel" "$(uname -r)"
-  print_kv "Current cmdline" "$(cat /proc/cmdline 2>/dev/null || true)"
-  print_kv "Bootloader" "$(detect_bootloader)"
+  if (( ENABLE_COLOR )); then
+    print_kv "Kernel" "${C_GREEN}$(uname -r)${C_RESET}"
+    print_kv "Current cmdline" "${C_DIM}$(cat /proc/cmdline 2>/dev/null || true)${C_RESET}"
+    print_kv "Bootloader" "${C_GREEN}$(detect_bootloader)${C_RESET}"
+  else
+    print_kv "Kernel" "$(uname -r)"
+    print_kv "Current cmdline" "$(cat /proc/cmdline 2>/dev/null || true)"
+    print_kv "Bootloader" "$(detect_bootloader)"
+  fi
 
   # Health check
   say
-  say "-- Health check --"
+  if (( ENABLE_COLOR )); then
+    say "${C_CYAN}-- Health check --${C_RESET}"
+  else
+    say "-- Health check --"
+  fi
   local hc
   hc="$(vfio_config_health)"
   local status
   status="$(printf '%s\n' "$hc" | awk -F= '/^STATUS=/{print $2; exit}')"
-  print_kv "Health" "${status:-UNKNOWN}"
+  if (( ENABLE_COLOR )); then
+    case "${status:-UNKNOWN}" in
+      OK)
+        print_kv "Health" "${C_GREEN}${status}${C_RESET}"
+        ;;
+      WARN)
+        print_kv "Health" "${C_YELLOW}${status}${C_RESET}"
+        ;;
+      BAD)
+        print_kv "Health" "${C_RED}${status}${C_RESET}"
+        ;;
+      *)
+        print_kv "Health" "${status:-UNKNOWN}"
+        ;;
+    esac
+  else
+    print_kv "Health" "${status:-UNKNOWN}"
+  fi
   printf '%s\n' "$hc" | awk -F= '/^REASON=/{print "  - " $2}'
 
   # Our config
   if readable_file "$CONF_FILE"; then
-    print_kv "Config" "$CONF_FILE (present)"
+    if (( ENABLE_COLOR )); then
+      print_kv "Config" "${C_GREEN}$CONF_FILE (present)${C_RESET}"
+    else
+      print_kv "Config" "$CONF_FILE (present)"
+    fi
     # shellcheck disable=SC1090
     . "$CONF_FILE"
     print_kv "Configured host GPU" "${HOST_GPU_BDF:-<unset>}"
@@ -716,27 +751,47 @@ detect_existing_vfio_report() {
     print_kv "Configured host audio" "${HOST_AUDIO_BDFS_CSV:-<unset>}"
     print_kv "Configured guest audio" "${GUEST_AUDIO_BDFS_CSV:-<unset>}"
   else
-    print_kv "Config" "$CONF_FILE (missing)"
+    if (( ENABLE_COLOR )); then
+      print_kv "Config" "${C_RED}$CONF_FILE (missing)${C_RESET}"
+    else
+      print_kv "Config" "$CONF_FILE (missing)"
+    fi
   fi
 
   # systemd unit
   if readable_file "$SYSTEMD_UNIT"; then
-    print_kv "Systemd unit" "$SYSTEMD_UNIT (present)"
+    if (( ENABLE_COLOR )); then
+      print_kv "Systemd unit" "${C_GREEN}$SYSTEMD_UNIT (present)${C_RESET}"
+    else
+      print_kv "Systemd unit" "$SYSTEMD_UNIT (present)"
+    fi
     if command -v systemctl >/dev/null 2>&1; then
       print_kv "Unit enabled" "$(systemctl is-enabled vfio-bind-selected-gpu.service 2>/dev/null || true)"
       print_kv "Unit active" "$(systemctl is-active vfio-bind-selected-gpu.service 2>/dev/null || true)"
       print_kv "Unit status" "$(systemctl show -p ExecStart vfio-bind-selected-gpu.service 2>/dev/null | sed 's/^ExecStart=//' || true)"
     fi
   else
-    print_kv "Systemd unit" "$SYSTEMD_UNIT (missing)"
+    if (( ENABLE_COLOR )); then
+      print_kv "Systemd unit" "${C_RED}$SYSTEMD_UNIT (missing)${C_RESET}"
+    else
+      print_kv "Systemd unit" "$SYSTEMD_UNIT (missing)"
+    fi
   fi
 
   # modules-load
   if readable_file "$MODULES_LOAD"; then
-    print_kv "Modules-load" "$MODULES_LOAD (present)"
+    if (( ENABLE_COLOR )); then
+      print_kv "Modules-load" "${C_GREEN}$MODULES_LOAD (present)${C_RESET}"
+    else
+      print_kv "Modules-load" "$MODULES_LOAD (present)"
+    fi
     print_kv "Modules-load content" "$(tr '\n' ' ' <"$MODULES_LOAD" 2>/dev/null || true)"
   else
-    print_kv "Modules-load" "$MODULES_LOAD (missing)"
+    if (( ENABLE_COLOR )); then
+      print_kv "Modules-load" "${C_RED}$MODULES_LOAD (missing)${C_RESET}"
+    else
+      print_kv "Modules-load" "$MODULES_LOAD (missing)"
+    fi
   fi
 
   # modprobe configs
@@ -746,20 +801,38 @@ detect_existing_vfio_report() {
   fi
   if [[ -n "$hits" ]]; then
     say
-    say "-- /etc/modprobe.d matches (first 50) --"
+    if (( ENABLE_COLOR )); then
+      say "${C_CYAN}-- /etc/modprobe.d matches (first 50) --${C_RESET}"
+    else
+      say "-- /etc/modprobe.d matches (first 50) --"
+    fi
     printf '%s\n' "$hits"
   else
     say
-    say "-- /etc/modprobe.d matches --"
+    if (( ENABLE_COLOR )); then
+      say "${C_CYAN}-- /etc/modprobe.d matches --${C_RESET}"
+    else
+      say "-- /etc/modprobe.d matches --"
+    fi
     say "  (none found)"
   fi
 
   # initramfs hints
   say
-  say "-- initramfs tooling detected --"
-  print_kv "update-initramfs" "$(command -v update-initramfs >/dev/null 2>&1 && echo yes || echo no)"
-  print_kv "mkinitcpio" "$(command -v mkinitcpio >/dev/null 2>&1 && echo yes || echo no)"
-  print_kv "dracut" "$(command -v dracut >/dev/null 2>&1 && echo yes || echo no)"
+  if (( ENABLE_COLOR )); then
+    say "${C_CYAN}-- initramfs tooling detected --${C_RESET}"
+  else
+    say "-- initramfs tooling detected --"
+  fi
+  if (( ENABLE_COLOR )); then
+    print_kv "update-initramfs" "${C_DIM}$(command -v update-initramfs >/dev/null 2>&1 && echo yes || echo no)${C_RESET}"
+    print_kv "mkinitcpio" "${C_DIM}$(command -v mkinitcpio >/dev/null 2>&1 && echo yes || echo no)${C_RESET}"
+    print_kv "dracut" "${C_DIM}$(command -v dracut >/dev/null 2>&1 && echo yes || echo no)${C_RESET}"
+  else
+    print_kv "update-initramfs" "$(command -v update-initramfs >/dev/null 2>&1 && echo yes || echo no)"
+    print_kv "mkinitcpio" "$(command -v mkinitcpio >/dev/null 2>&1 && echo yes || echo no)"
+    print_kv "dracut" "$(command -v dracut >/dev/null 2>&1 && echo yes || echo no)"
+  fi
   if readable_file /etc/initramfs-tools/modules; then
     print_kv "/etc/initramfs-tools/modules" "present"
     print_kv "vfio in initramfs-tools/modules" "$(grep -nE '^(vfio|vfio_pci|vfio-iommu-type1|vfio_virqfd)' /etc/initramfs-tools/modules 2>/dev/null | tr '\n' ' ' || true)"
@@ -771,10 +844,18 @@ detect_existing_vfio_report() {
 
   # vendor-reset module (useful for AMD reset bugs)
   if [[ -d /sys/module/vendor_reset ]]; then
-    print_kv "vendor-reset" "Loaded (good for AMD reset bugs)"
+    if (( ENABLE_COLOR )); then
+      print_kv "vendor-reset" "${C_GREEN}Loaded (good for AMD reset bugs)${C_RESET}"
+    else
+      print_kv "vendor-reset" "Loaded (good for AMD reset bugs)"
+    fi
   else
     if command -v lspci >/dev/null 2>&1 && lspci -n | grep -q "1002:"; then
-      print_kv "vendor-reset" "MISSING (Recommended for AMD GPUs with reset issues)"
+      if (( ENABLE_COLOR )); then
+        print_kv "vendor-reset" "${C_YELLOW}MISSING (Recommended for AMD GPUs with reset issues)${C_RESET}"
+      else
+        print_kv "vendor-reset" "MISSING (Recommended for AMD GPUs with reset issues)"
+      fi
     else
       print_kv "vendor-reset" "Not loaded"
     fi
@@ -783,7 +864,11 @@ detect_existing_vfio_report() {
   # GRUB defaults
   if readable_file /etc/default/grub; then
     say
-    say "-- /etc/default/grub cmdline --"
+    if (( ENABLE_COLOR )); then
+      say "${C_CYAN}-- /etc/default/grub cmdline --${C_RESET}"
+    else
+      say "-- /etc/default/grub cmdline --"
+    fi
     local key
     key="$(grub_get_key 2>/dev/null || true)"
     if [[ -n "$key" ]]; then
@@ -802,7 +887,11 @@ detect_existing_vfio_report() {
     bls_dir="$(systemd_boot_entries_dir 2>/dev/null || true)"
     if [[ -n "$bls_dir" ]]; then
       say
-      say "-- Boot Loader Spec entries (IOMMU/VFIO params) --"
+      if (( ENABLE_COLOR )); then
+        say "${C_CYAN}-- Boot Loader Spec entries (IOMMU/VFIO params) --${C_RESET}"
+      else
+        say "-- Boot Loader Spec entries (IOMMU/VFIO params) --"
+      fi
       local f opts
       shopt -s nullglob
       for f in "$bls_dir"/*.conf; do
@@ -840,20 +929,33 @@ detect_existing_vfio_report() {
 
   # Current device bindings
   say
-  say "-- Current GPU/Audio bindings (lspci -nnk) --"
+  if (( ENABLE_COLOR )); then
+    say "${C_CYAN}-- Current GPU/Audio bindings (lspci -nnk) --${C_RESET}"
+  else
+    say "-- Current GPU/Audio bindings (lspci -nnk) --"
+  fi
   if command -v lspci >/dev/null 2>&1; then
     lspci -Dnn | awk '/(VGA compatible controller|3D controller|Display controller|Audio device)/ {print $1}' | while read -r bdf; do
       [[ -n "$bdf" ]] || continue
       # Only show AMD/NVIDIA/Intel GPUs + audio
       if lspci -Dnn -s "$bdf" | grep -Eq 'Advanced Micro Devices|AMD/ATI|NVIDIA|Intel|Audio device'; then
-        printf '%s\n' "$(lspci -Dnnk -s "$bdf" 2>/dev/null | sed 's/^/  /')"
+        if (( ENABLE_COLOR )); then
+          printf '%s\n' "${C_GREEN}  $bdf${C_RESET}"
+          lspci -Dnnk -s "$bdf" 2>/dev/null | sed '1d;s/^/  /'
+        else
+          printf '%s\n' "$(lspci -Dnnk -s "$bdf" 2>/dev/null | sed 's/^/  /')"
+        fi
       fi
     done
   fi
 
   # Libvirt hook detection (common VFIO stage)
   say
-  say "-- libvirt hook detection --"
+  if (( ENABLE_COLOR )); then
+    say "${C_CYAN}-- libvirt hook detection --${C_RESET}"
+  else
+    say "-- libvirt hook detection --"
+  fi
   if [[ -d /etc/libvirt/hooks ]]; then
     print_kv "/etc/libvirt/hooks" "present"
     print_kv "hook files" "$(ls -1 /etc/libvirt/hooks 2>/dev/null | tr '\n' ' ' || true)"
