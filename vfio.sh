@@ -1459,8 +1459,9 @@ grub_write_cmdline_in_place() {
 # is available. This helps catch situations where an edited cmdline or script
 # causes lexer errors at boot ("lexer.c:352: syntax error").
 #
-# We never abort on failure here; we only print a warning so the user knows
-# that GRUB reported a problem and can fix it or roll back a snapshot.
+# We return non-zero when GRUB reports a syntax error so callers can
+# automatically roll back to a known-good /etc/default/grub if a backup
+# from this run exists.
 maybe_check_grub_cfg() {
   local cfg=""
 
@@ -1479,7 +1480,7 @@ maybe_check_grub_cfg() {
       return 0
     fi
     note "GRUB syntax check reported issues in $cfg (boot menu may show lexer errors)."
-    return 0
+    return 1
   fi
 
   # Some distros ship grub-script-check instead.
@@ -1488,7 +1489,7 @@ maybe_check_grub_cfg() {
       return 0
     fi
     note "GRUB syntax check reported issues in $cfg (boot menu may show lexer errors)."
-    return 0
+    return 1
   fi
 
   return 0
@@ -1617,14 +1618,17 @@ opensuse_sdbootutil_update_all_entries() {
   if ! have_cmd sdbootutil; then
     return 0
   fi
-  say "Updating Boot Loader Spec entries via: sdbootutil update-all-entries (errors will be ignored by this helper)"
+  say "Updating Boot Loader Spec entries via: sdbootutil add-all-kernels && sdbootutil update-all-entries (errors will be ignored by this helper)"
   # Call sdbootutil directly and silence its stdout/stderr to avoid leaking
   # internal sed errors or similar implementation details to the user.
-  # If it fails, we only emit a soft note instead of aborting reset.
-  if sdbootutil update-all-entries >/dev/null 2>&1; then
+  # We try add-all-kernels first (to ensure all installed kernels have
+  # BLS entries) and then update-all-entries to sync options/initrds.
+  # If either fails, we only emit a soft note instead of aborting.
+  if sdbootutil add-all-kernels >/dev/null 2>&1 && \
+     sdbootutil update-all-entries >/dev/null 2>&1; then
     return 0
   fi
-  note "sdbootutil update-all-entries reported an error; boot entries may still reference older parameters or initrds."
+  note "sdbootutil add-all-kernels/update-all-entries reported an error; BLS entries may still reference older parameters or initrds."
   return 0
 }
 
@@ -3038,9 +3042,39 @@ reset_vfio_all() {
       [[ -n "$out" ]] && run grub2-mkconfig -o "$out" || true
     fi
 
-    # After regenerating grub.cfg, run a best-effort syntax check so we can
-    # warn the user if GRub would show lexer errors at boot.
-    maybe_check_grub_cfg
+    # After regenerating grub.cfg, run a best-effort syntax check. If GRUB
+    # reports a syntax error, we automatically roll back /etc/default/grub
+    # to the backup from this run (if present) and regenerate grub.cfg a
+    # second time so the user does not get stuck with a broken boot menu.
+    if ! maybe_check_grub_cfg; then
+      local bak="/etc/default/grub.bak.${RUN_TS}"
+      if [[ -f "$bak" ]]; then
+        note "GRUB syntax check failed; restoring previous /etc/default/grub from $bak and regenerating grub.cfg."
+        cp -a "$bak" /etc/default/grub || true
+        if command -v update-grub >/dev/null 2>&1; then
+          say "Re-running update-grub after restoring backup..."
+          run update-grub || true
+        elif command -v grub-mkconfig >/dev/null 2>&1; then
+          local out2=""
+          if [[ -d /boot/grub ]]; then
+            out2=/boot/grub/grub.cfg
+          elif [[ -d /boot/grub2 ]]; then
+            out2=/boot/grub2/grub.cfg
+          fi
+          [[ -n "$out2" ]] && { say "Re-running grub-mkconfig -o $out2 after restoring backup..."; run grub-mkconfig -o "$out2" || true; }
+        elif command -v grub2-mkconfig >/dev/null 2>&1; then
+          local out3=""
+          if [[ -d /boot/grub2 ]]; then
+            out3=/boot/grub2/grub.cfg
+          elif [[ -d /boot/grub ]]; then
+            out3=/boot/grub/grub.cfg
+          fi
+          [[ -n "$out3" ]] && { say "Re-running grub2-mkconfig -o $out3 after restoring backup..."; run grub2-mkconfig -o "$out3" || true; }
+        fi
+      else
+        note "GRUB syntax check failed but no backup /etc/default/grub.bak.${RUN_TS} was found; please review /etc/default/grub manually."
+      fi
+    fi
   fi
 
   # Always rebuild initramfs at end of reset (so removed blacklists/modules are fully gone on next boot).
