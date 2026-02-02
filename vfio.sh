@@ -3502,6 +3502,68 @@ apply_configuration() {
   # BDF, and in that case we default the prompt to YES.
   maybe_offer_kernel_longterm "$guest_vendor" "$guest_gpu"
 
+  # EXTRA (advanced, openSUSE-only): if kernel-longterm is installed,
+  # offer to UNINSTALL the default kernel package so only the long-term
+  # kernel remains. This is dangerous if the long-term kernel ever
+  # becomes unbootable, so the default answer is NO and the prompt is
+  # explicit about the risks.
+  if is_opensuse_like && rpm -q kernel-longterm >/dev/null 2>&1; then
+    say
+    hdr "Advanced: openSUSE default kernel removal (optional)"
+    note "You are running on an openSUSE-like system and the 'kernel-longterm' package is installed."
+    note "For VFIO, some users prefer to keep ONLY the long-term kernel and uninstall the default kernel package."
+    if (( ENABLE_COLOR )); then
+      say "${C_BOLD}${C_RED}DANGER:${C_RESET} Removing the default kernel means you will NOT have a fallback kernel if kernel-longterm ever fails to boot."
+    else
+      say "DANGER: Removing the default kernel means you will NOT have a fallback kernel if kernel-longterm ever fails to boot."
+    fi
+    note "Recommended for most users: NO (keep both kernels so you always have a rescue/fallback entry)."
+    if prompt_yn "Uninstall the default kernel package (e.g. kernel-default) and keep only kernel-longterm?" N "Kernel packages (advanced)"; then
+      if have_cmd zypper; then
+        say "Attempting to uninstall default kernel packages via zypper..."
+        # We target the common default-kernel patterns. If some are not
+        # installed, zypper will simply ignore them.
+        run zypper --non-interactive rm kernel-default kernel-default-base kernel-default-extra 2>/dev/null || \
+          note "zypper could not remove one or more default kernel packages automatically. You may need to adjust packages manually."
+        # After changing installed kernels, refresh BLS entries if applicable.
+        opensuse_sdbootutil_update_all_entries
+      else
+        note "zypper is not available; cannot manage kernel packages automatically."
+      fi
+    else
+      note "Keeping both default and long-term kernels installed (safer for recovery)."
+    fi
+  fi
+
+  # EXTRA (advanced, openSUSE-only): if kernel-longterm is installed,
+  # offer to UNINSTALL the default kernel package so only the long-term
+  # kernel remains. This is dangerous if the long-term kernel ever
+  # becomes unbootable, so the default answer is NO and the prompt is
+  # explicit about the risks.
+  if is_opensuse_like && rpm -q kernel-longterm >/dev/null 2>&1; then
+    say
+    hdr "Advanced: openSUSE default kernel removal (optional)"
+    note "You are running on an openSUSE-like system and the 'kernel-longterm' package is installed."
+    note "For VFIO, some users prefer to keep ONLY the long-term kernel and uninstall the default kernel package."
+    note "${C_YELLOW}This is dangerous:${C_RESET} if the long-term kernel ever fails to boot, you will not have the default kernel as a fallback."
+    note "Recommended for most users: NO (keep both kernels so you always have a rescue/fallback entry)."
+    if prompt_yn "Uninstall the default kernel package (e.g. kernel-default) and keep only kernel-longterm?" N "Kernel packages (advanced)"; then
+      if have_cmd zypper; then
+        say "Attempting to uninstall default kernel packages via zypper..."
+        # We target the common default-kernel patterns. If some are not
+        # installed, zypper will simply ignore them.
+        run zypper --non-interactive rm kernel-default kernel-default-base kernel-default-extra 2>/dev/null || \
+          note "zypper could not remove one or more default kernel packages automatically. You may need to adjust packages manually."
+        # After changing installed kernels, refresh BLS entries if applicable.
+        opensuse_sdbootutil_update_all_entries
+      else
+        note "zypper is not available; cannot manage kernel packages automatically."
+      fi
+    else
+      note "Keeping both default and long-term kernels installed (safer for recovery)."
+    fi
+  fi
+
   say
   hdr "Initramfs integration"
 
