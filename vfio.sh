@@ -2688,7 +2688,11 @@ verify_setup() {
   local ok=1
 
   say
-  say "Configured devices from $CONF_FILE:"
+  if (( ENABLE_COLOR )); then
+    say "${C_CYAN}Configured devices from $CONF_FILE:${C_RESET}"
+  else
+    say "Configured devices from $CONF_FILE:"
+  fi
   say "  Guest GPU:   ${GUEST_GPU_BDF:-<missing>}"
   say "  Guest audio: ${GUEST_AUDIO_BDFS_CSV:-<none>}"
   say "  Host audio:  ${HOST_AUDIO_BDFS_CSV:-<none>}"
@@ -2767,7 +2771,11 @@ verify_setup() {
       say "OK: Bind script present: $BIND_SCRIPT"
     fi
   else
-    say "WARN: Bind script missing: $BIND_SCRIPT"
+    if (( ENABLE_COLOR )); then
+      say "${C_YELLOW}WARN${C_RESET}: Bind script missing: $BIND_SCRIPT"
+    else
+      say "WARN: Bind script missing: $BIND_SCRIPT"
+    fi
   fi
 
   if [[ -f "$SYSTEMD_UNIT" ]]; then
@@ -2780,11 +2788,20 @@ verify_setup() {
       local enabled active
       enabled="$(systemctl is-enabled vfio-bind-selected-gpu.service 2>/dev/null || true)"
       active="$(systemctl is-active vfio-bind-selected-gpu.service 2>/dev/null || true)"
-      say "INFO: vfio-bind-selected-gpu.service is-enabled: ${enabled:-<unknown>}"
-      say "INFO: vfio-bind-selected-gpu.service is-active:  ${active:-<unknown>}"
+      if (( ENABLE_COLOR )); then
+        say "${C_BLUE}INFO${C_RESET}: vfio-bind-selected-gpu.service is-enabled: ${enabled:-<unknown>}"
+        say "${C_BLUE}INFO${C_RESET}: vfio-bind-selected-gpu.service is-active:  ${active:-<unknown>}"
+      else
+        say "INFO: vfio-bind-selected-gpu.service is-enabled: ${enabled:-<unknown>}"
+        say "INFO: vfio-bind-selected-gpu.service is-active:  ${active:-<unknown>}"
+      fi
     fi
   else
-    say "WARN: Systemd unit missing: $SYSTEMD_UNIT"
+    if (( ENABLE_COLOR )); then
+      say "${C_YELLOW}WARN${C_RESET}: Systemd unit missing: $SYSTEMD_UNIT"
+    else
+      say "WARN: Systemd unit missing: $SYSTEMD_UNIT"
+    fi
   fi
 
   # IOMMU sanity (best-effort)
@@ -2800,11 +2817,19 @@ verify_setup() {
           say "OK: IOMMU group exists for guest GPU ($GUEST_GPU_BDF): group $g"
         fi
       else
-        say "WARN: No IOMMU group found for guest GPU ($GUEST_GPU_BDF). IOMMU may be disabled."
+        if (( ENABLE_COLOR )); then
+          say "${C_YELLOW}WARN${C_RESET}: No IOMMU group found for guest GPU ($GUEST_GPU_BDF). IOMMU may be disabled."
+        else
+          say "WARN: No IOMMU group found for guest GPU ($GUEST_GPU_BDF). IOMMU may be disabled."
+        fi
       fi
     fi
   else
-    say "WARN: /sys/kernel/iommu_groups not present. IOMMU may be disabled in BIOS/kernel."
+    if (( ENABLE_COLOR )); then
+      say "${C_YELLOW}WARN${C_RESET}: /sys/kernel/iommu_groups not present. IOMMU may be disabled in BIOS/kernel."
+    else
+      say "WARN: /sys/kernel/iommu_groups not present. IOMMU may be disabled in BIOS/kernel."
+    fi
   fi
 
   # Kernel cmdline + bootloader sanity (if available)
@@ -2819,7 +2844,11 @@ verify_setup() {
         say "OK: Running kernel cmdline contains iommu=pt"
       fi
     else
-      say "WARN: Running kernel cmdline does NOT contain iommu=pt"
+      if (( ENABLE_COLOR )); then
+        say "${C_YELLOW}WARN${C_RESET}: Running kernel cmdline does NOT contain iommu=pt"
+      else
+        say "WARN: Running kernel cmdline does NOT contain iommu=pt"
+      fi
     fi
   fi
 
@@ -2835,7 +2864,11 @@ verify_setup() {
           say "OK: /etc/default/grub contains iommu=pt"
         fi
       else
-        say "WARN: /etc/default/grub missing iommu=pt (did you skip GRUB edit?)"
+        if (( ENABLE_COLOR )); then
+          say "${C_YELLOW}WARN${C_RESET}: /etc/default/grub missing iommu=pt (did you skip GRUB edit?)"
+        else
+          say "WARN: /etc/default/grub missing iommu=pt (did you skip GRUB edit?)"
+        fi
       fi
     fi
   fi
@@ -2874,7 +2907,11 @@ verify_setup() {
                 say "OK: current BLS options contain IOMMU + rd.driver.pre=vfio-pci"
               fi
             else
-              say "WARN: current BLS options are missing some of: amd_iommu/intel_iommu, iommu=pt, rd.driver.pre=vfio-pci"
+              if (( ENABLE_COLOR )); then
+                say "${C_YELLOW}WARN${C_RESET}: current BLS options are missing some of: amd_iommu/intel_iommu, iommu=pt, rd.driver.pre=vfio-pci"
+              else
+                say "WARN: current BLS options are missing some of: amd_iommu/intel_iommu, iommu=pt, rd.driver.pre=vfio-pci"
+              fi
               say "      You may want to re-run the installer on this snapshot to update /etc/kernel/cmdline and BLS entries."
             fi
             break
