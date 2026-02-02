@@ -3085,6 +3085,15 @@ reset_vfio_all() {
   say
   say "Reset complete. Reboot recommended."
   note "If any devices are currently bound to vfio-pci, a reboot is the cleanest way to restore host drivers."
+
+  # Snapshot-aware hint for openSUSE/Btrfs users: each snapshot has its own
+  # /etc/kernel/cmdline. If you later roll back to an older snapshot that
+  # still contains VFIO-related kernel params, you should run this reset
+  # helper again from within that snapshot if you also want it cleaned.
+  if is_opensuse_like && [[ -d /.snapshots ]]; then
+    note "On Btrfs snapshots, each snapshot keeps its own /etc/kernel/cmdline."
+    note "If you roll back to an older snapshot later, run 'sudo sh vfio.sh --reset' again inside that snapshot to clean its VFIO kernel params too."
+  fi
 }
 
 preflight_existing_config_gate() {
