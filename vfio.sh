@@ -2845,14 +2845,22 @@ reset_vfio_all() {
     die "Reset cancelled"
   fi
 
-  # Disable system service (best-effort)
+  # Disable system services (best-effort)
   if command -v systemctl >/dev/null 2>&1; then
+    # Core VFIO bind unit
     run systemctl disable --now vfio-bind-selected-gpu.service 2>/dev/null || true
+    # Optional boot log dumper unit
+    run systemctl disable --now vfio-dump-boot-log.service 2>/dev/null || true
     run systemctl daemon-reload 2>/dev/null || true
   fi
 
-  # Remove managed files
-  run rm -f "$SYSTEMD_UNIT" "$BIND_SCRIPT" "$AUDIO_SCRIPT" "$CONF_FILE" "$MODULES_LOAD" "$BLACKLIST_FILE" "$DRACUT_VFIO_CONF" 2>/dev/null || true
+  # Remove managed files, including the optional boot log dumper bits
+  local bootlog_unit="/etc/systemd/system/vfio-dump-boot-log.service"
+  local bootlog_bin="/home/${SUDO_USER:-root}/.local/bin/vfio-dump-boot-log.sh"
+
+  run rm -f "$SYSTEMD_UNIT" "$BIND_SCRIPT" "$AUDIO_SCRIPT" \
+           "$CONF_FILE" "$MODULES_LOAD" "$BLACKLIST_FILE" \
+           "$bootlog_unit" "$bootlog_bin" 2>/dev/null || true
 
   # Remove user unit for SUDO_USER (and optionally all /home users)
   if [[ -n "${SUDO_USER:-}" ]]; then
