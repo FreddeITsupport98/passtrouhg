@@ -1548,6 +1548,40 @@ remove_param_all() {
   echo "$(trim "$out")"
 }
 
+# Return 0 if the running kernel looks like an openSUSE default kernel
+# ("*-default") with a version at or above a given threshold. This is used
+# to warn users about known/expected VFIO binding issues on very new
+# default kernels, and to suggest booting the long-term kernel instead.
+opensuse_default_kernel_is_at_least() {
+  local min_major="$1" min_minor="$2"
+  local kver rel base major minor
+
+  kver="$(uname -r 2>/dev/null || echo '')"
+  [[ -n "$kver" ]] || return 1
+
+  # Only care about -default flavour; -longterm and others are fine.
+  case "$kver" in
+    *-default*) : ;;
+    *) return 1 ;;
+  esac
+
+  base="${kver%%-*}"
+  major="${base%%.*}"
+  minor="${base#*.}"
+  minor="${minor%%.*}"
+
+  [[ "$major" =~ ^[0-9]+$ ]] || return 1
+  [[ "$minor" =~ ^[0-9]+$ ]] || return 1
+
+  if (( major > min_major )); then
+    return 0
+  fi
+  if (( major == min_major && minor >= min_minor )); then
+    return 0
+  fi
+  return 1
+}
+
 detect_bootloader() {
   # 1) Check if systemd-boot is the ACTIVE bootloader (via bootctl)
   # This fixes setups (like openSUSE) where /etc/default/grub exists but isn't used.
@@ -3192,6 +3226,21 @@ detect_system() {
     note "Automatic kernel parameter editing is available for ${CTX[bootloader]}."
   else
     note "Automatic kernel parameter editing is ONLY implemented for GRUB and systemd-boot. For ${CTX[bootloader]}, you must apply kernel parameters manually when prompted."
+  fi
+
+  # On openSUSE, warn if we are running a very new default kernel that is
+  # known to cause VFIO binding problems for some AMD GPUs, and suggest
+  # using kernel-longterm instead when available.
+  if is_opensuse_like && opensuse_default_kernel_is_at_least 6 13; then
+    say
+    hdr "Kernel compatibility (openSUSE default kernel vs. VFIO)"
+    note "The running kernel ($(uname -r)) is a very new *-default build (>= 6.13)."
+    note "On some systems this default kernel lets amdgpu claim the guest GPU even when vfio-pci.ids and rd.driver.pre=vfio-pci are set."
+    if rpm -q kernel-longterm >/dev/null 2>&1; then
+      note "The 'kernel-longterm' package is installed. For VFIO you may get more reliable binding by booting the -longterm kernel instead of the default one."
+    else
+      note "If you see VFIO binding failures on this kernel, consider installing 'kernel-longterm' and testing VFIO there."
+    fi
   fi
 
   # Early detection of existing passthrough config (before user makes changes).
