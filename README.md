@@ -129,7 +129,7 @@ Use `sudo` so that the script can write to `/etc`, `/usr/local`, systemd directo
 The script supports several modes controlled by flags. By default, without any flag, it runs the **interactive installer**.
 
 ```text
-./vfio.sh [--debug] [--dry-run] [--verify] [--detect] [--self-test] [--reset]
+./vfio.sh [--debug] [--dry-run] [--verify] [--detect] [--self-test] [--reset] [--disable-bootlog]
 ```
 
 ### Common flags
@@ -192,6 +192,11 @@ The script supports several modes controlled by flags. By default, without any f
       - `/etc/kernel/cmdline` on openSUSE/BLS systems, followed by a quiet `sdbootutil add-all-kernels` + `update-all-entries` to sync BLS entries.
     - Rebuilds initramfs to reflect the cleaned‑up configuration.
   - On openSUSE/Btrfs systems, prints a reminder that each snapshot has its own `/etc/kernel/cmdline`; after rolling back to an older snapshot you should re-run `--reset` from within that snapshot if you want its VFIO parameters removed as well.
+
+- `--disable-bootlog`
+  - **Non-destructive helper** that only disables the optional `vfio-dump-boot-log.service` boot log dumper.
+  - Leaves all VFIO bindings, config files, services, and kernel parameters intact.
+  - Useful once your setup is stable and you no longer want per-boot VFIO log files cluttering `~/Desktop/vfio-boot-logs/`.
 
 ---
 
