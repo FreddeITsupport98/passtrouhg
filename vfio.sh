@@ -2954,7 +2954,7 @@ reset_vfio_all() {
       if [[ "$(trim "$knew")" != "$(trim "$kcur")" ]]; then
         if (( ! DRY_RUN )); then
           printf '%s
-|' "$knew" >/etc/kernel/cmdline
+' "$knew" >/etc/kernel/cmdline
         fi
         # Ensure BLS/systemd-boot entries are regenerated without these
         # params on openSUSE.
