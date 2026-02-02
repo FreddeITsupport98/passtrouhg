@@ -194,9 +194,9 @@ The script supports several modes controlled by flags. By default, without any f
   - On openSUSE/Btrfs systems, prints a reminder that each snapshot has its own `/etc/kernel/cmdline`; after rolling back to an older snapshot you should re-run `--reset` from within that snapshot if you want its VFIO parameters removed as well.
 
 - `--disable-bootlog`
-  - **Non-destructive helper** that only disables the optional `vfio-dump-boot-log.service` boot log dumper.
-  - Leaves all VFIO bindings, config files, services, and kernel parameters intact.
-  - Useful once your setup is stable and you no longer want per-boot VFIO log files cluttering `~/Desktop/vfio-boot-logs/`.
+  - Helper that disables and removes the optional `vfio-dump-boot-log.service` boot log dumper unit and its helper script.
+  - Leaves all VFIO bindings, core config files, and kernel parameters intact.
+  - Useful once your setup is stable and you no longer want the boot log dumper to run (existing logs under `~/Desktop/vfio-boot-logs/` are not deleted).
 
 ---
 
