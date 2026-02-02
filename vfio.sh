@@ -139,15 +139,16 @@ prompt_yn() {
 
 usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--verify] [--detect] [--self-test] [--reset]
+Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--verify] [--detect] [--self-test] [--reset] [--disable-bootlog]
 
-  --debug      Enable verbose debug logging (and bash xtrace).
-  --dry-run    Show actions but do not write files / run system-changing commands.
-  --no-tui     Force plain-text prompts even if whiptail is installed.
-  --verify     Do not change anything; validate an existing setup (reads $CONF_FILE).
-  --detect     Print a detailed report of existing VFIO/passthrough configuration and exit.
-  --self-test  Run automated checks for common issues (awk compatibility, PipeWire access) and exit.
-  --reset      Reset/remove VFIO passthrough settings installed by this script (systemd/modprobe/grub/initramfs/user units).
+  --debug           Enable verbose debug logging (and bash xtrace).
+  --dry-run         Show actions but do not write files / run system-changing commands.
+  --no-tui          Force plain-text prompts even if whiptail is installed.
+  --verify          Do not change anything; validate an existing setup (reads $CONF_FILE).
+  --detect          Print a detailed report of existing VFIO/passthrough configuration and exit.
+  --self-test       Run automated checks for common issues (awk compatibility, PipeWire access) and exit.
+  --reset           Reset/remove VFIO passthrough settings installed by this script (systemd/modprobe/grub/initramfs/user units).
+  --disable-bootlog Disable only the optional VFIO boot log dumper service/unit, keeping the rest of the VFIO setup intact.
 EOF
 }
 
@@ -176,6 +177,9 @@ parse_args() {
       --reset)
         MODE="reset"
         ;;
+      --disable-bootlog)
+        MODE="disable-bootlog"
+        ;;
       -h|--help)
         usage
         exit 0
@@ -191,6 +195,29 @@ parse_args() {
   if [[ "$MODE" == "verify" || "$MODE" == "detect" || "$MODE" == "self-test" ]]; then
     DRY_RUN=1
   fi
+}
+
+# Disable only the optional VFIO boot log dumper without touching the rest
+# of the VFIO configuration.
+disable_bootlog_dumper() {
+  hdr "Disable VFIO boot log dumper"
+
+  local unit="/etc/systemd/system/vfio-dump-boot-log.service"
+
+  if ! [[ -f "$unit" ]]; then
+    note "Boot log dumper unit not found; nothing to disable."
+    return 0
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    note "Disabling and stopping vfio-dump-boot-log.service (VFIO setup will remain active)."
+    run systemctl disable --now vfio-dump-boot-log.service 2>/dev/null || true
+    run systemctl daemon-reload 2>/dev/null || true
+  else
+    note "systemctl not found; please disable vfio-dump-boot-log.service manually if needed."
+  fi
+
+  say "Boot log dumper disabled. Existing log files under ~/Desktop/vfio-boot-logs are left untouched."
 }
 
 write_file_atomic() {
@@ -4174,6 +4201,13 @@ main() {
     require_root
     require_systemd
     reset_vfio_all
+    exit 0
+  fi
+
+  if [[ "$MODE" == "disable-bootlog" ]]; then
+    require_root
+    require_systemd
+    disable_bootlog_dumper
     exit 0
   fi
 
