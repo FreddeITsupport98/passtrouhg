@@ -185,6 +185,124 @@ The script supports several modes controlled by flags. By default, without any f
 
 ---
 
+## Additional environment-specific behavior
+
+### openSUSE, Btrfs snapshots and Boot Loader Spec (BLS)
+
+On openSUSE systems that use **Btrfs snapshots** and **Boot Loader Spec (BLS)** entries, the script has extra logic to avoid the common pitfalls you ran into while experimenting with VFIO snapshots:
+
+- Detects when the system is "openSUSE-like" via `ID` / `ID_LIKE` from `/etc/os-release`.
+- Treats `/etc/kernel/cmdline` as the **single source of truth** for kernel parameters on BLS systems.
+- Uses `sdbootutil` (when present) to regenerate BLS entries after changing `/etc/kernel/cmdline`, instead of trying to edit individual `*.conf` files itself.
+- Automatically adds **framebuffer-disabling parameters** when needed to avoid boot-VGA framebuffer traps:
+  - `video=efifb:off`
+  - `video=vesafb:off`
+  - `initcall_blacklist=sysfb_init`
+- Offers to temporarily force the system to boot into `multi-user.target` (text mode) so that you can debug VFIO issues without the display manager immediately crashing and causing a reboot loop.
+
+The net effect is that the script behaves like a **BLS-aware helper** on openSUSE:
+
+- You keep using the normal distribution tools (`dracut`, `sdbootutil`),
+- But the script ensures that VFIO-related parameters (`iommu=pt`, `rd.driver.pre=vfio-pci`, etc.) are consistently present in both `/etc/kernel/cmdline` and the generated entries.
+
+### SELinux / AppArmor and snapshot rollbacks
+
+On systems that support filesystem rollbacks (particularly openSUSE with Btrfs), enabling SELinux or AppArmor on an older root snapshot can cause subtle and confusing failures (services denied writes, desktop entering a spin-and-reboot loop, etc.).
+
+The script does **not** attempt to manage LSM policy, but for safer VFIO testing it offers to:
+
+- Remove `security=selinux` / `security=apparmor` and their `=1` forms from the kernel command line.
+- Add `selinux=0 apparmor=0` so that the kernel boots with both disabled while you experiment with passthrough.
+
+This is always presented as an **explicit prompt**; you can decline if you actively rely on SELinux/AppArmor and know how to manage their policies across snapshots.
+
+### Dracut and early VFIO binding (`rd.driver.pre=vfio-pci`)
+
+On **dracut-based** systems (including openSUSE Tumbleweed and many Fedora/RHEL style installs), the GPU driver may be pulled into the initramfs very early. If the host driver (`amdgpu`, `nvidia`, `i915`) loads before `vfio-pci`, passthrough can fail even if your GRUB/BLS parameters otherwise look correct.
+
+To address this the script:
+
+- Detects whether the `vfio-pci` module actually exists for the running kernel (via `modinfo`).
+- When it does, offers to add **`rd.driver.pre=vfio-pci`** to:
+  - `/etc/kernel/cmdline` on openSUSE BLS systems, and/or
+  - The GRUB kernel command line.
+- Treats this as **strongly recommended** on openSUSE + dracut, because it has a direct impact on whether the guest GPU is claimed by VFIO inside the initramfs.
+
+If `vfio-pci` is missing for the current kernel, the script deliberately **does not** add `rd.driver.pre=vfio-pci` (to avoid early-boot modprobe failures).
+
+### Boot log dumper for VFIO debugging
+
+The script can install a small helper + systemd service that automatically dumps detailed **boot logs for VFIO-related debugging** to your desktop after each boot:
+
+- A helper script is placed under the invoking user’s home (e.g. `~/.local/bin/vfio-dump-boot-log.sh`).
+- A system service (`vfio-dump-boot-log.service`) runs once at boot and writes snapshot-aware logs into:
+  - `~/Desktop/vfio-boot-logs/<year>/<month>/<day>/vfio-boot-<kernel>-{current,previous}.log`
+- The log capture is **Btrfs snapshot aware**:
+  - It parses the `rootflags=subvol=...` from `/proc/cmdline`.
+  - It encodes the snapshot or subvolume name into the path so you can tell which snapshot a log came from.
+
+This makes it much easier to see what happened on a failing VFIO snapshot **without** needing to dig around with `journalctl -b -1` or similar commands.
+
+### udev isolation rules for the guest GPU
+
+To further reduce the chance that the host desktop environment (GDM, SDDM, etc.) grabs the guest GPU, the script can install **udev rules** that remove the guest GPU (and optionally its HDMI audio functions) from the systemd "master seat":
+
+- Creates `/etc/udev/rules.d/99-vfio-isolation.rules` with rules like:
+  - `TAG-="seat" TAG-="master-of-seat"` for the guest GPU BDF.
+  - The same for any selected HDMI/DP audio PCI functions.
+- Reloads udev rules and triggers them so that the change applies immediately.
+
+The result is that the guest GPU is much less likely to be automatically associated with the host seat, making it easier to keep the card "headless" on the host and dedicated to the VM.
+
+### TUI (whiptail) support vs plain-text mode
+
+The script supports two presentation styles for its wizard:
+
+- A **text-based UI (TUI)** using `whiptail` when available:
+  - Yes/no dialogs for confirmations (`prompt_yn`).
+  - Scrollable menus for GPU and audio device selection (`select_from_list`).
+  - Clear titles on critical prompts like boot options, security modules, and initramfs behavior.
+- A robust **plain-text fallback** when `whiptail` is not installed or when `--no-tui` is passed:
+  - All prompts are printed to `/dev/tty` or `/dev/stderr` instead of stdout, so scripts that consume stdout remain stable.
+  - Menus are rendered as numbered lists; you type the index.
+
+You can force plain-text mode even when `whiptail` is present by using:
+
+```bash path=null start=null
+./vfio.sh --no-tui
+```
+
+This is useful when running over SSH or inside environments where TUI dialogs are undesirable.
+
+### Long-term kernel recommendation for some AMD setups
+
+On some AMD Navi setups (for example, GPUs with PCI IDs similar to `1002:73bf`), very recent default kernels have been observed to let `amdgpu` claim the guest GPU even when:
+
+- `vfio-pci.ids=vvvv:dddd` is present on the kernel command line, **and**
+- `rd.driver.pre=vfio-pci` is used on dracut-based systems.
+
+In contrast, the **distribution long-term kernel** (for example the `kernel-longterm` package on openSUSE) often has a more conservative driver stack and may reliably allow `vfio-pci` to own the card at boot.
+
+The script encapsulates this as an **optional helper**, not a forced behavior:
+
+- It checks whether:
+  - The system is openSUSE-like.
+  - The guest GPU vendor is AMD (`1002`).
+  - The guest GPU is **not** currently bound to `vfio-pci`.
+  - The `kernel-longterm` package is not yet installed.
+- If all of those are true, it prints a detailed explanation and offers to run:
+  - `zypper --non-interactive in kernel-longterm`
+- If the guest GPU is currently on `amdgpu`, the default answer is **YES**, and the prompt explains why installing the long-term kernel is recommended.
+- If the GPU is on some other driver (or unbound), the default is **NO**, and the script simply points out the command to use later if you run into binding problems.
+
+Importantly:
+
+- The script **does not remove** your existing kernel.
+- After installation, you can choose either the default kernel or the long-term kernel from your boot menu.
+- All other VFIO logic (IOMMU params, initramfs updates, binding service) works the same; the long-term kernel is just another, often more stable, option.
+
+---
+
 ## Interactive wizard (default mode)
 
 The default mode (`./vfio.sh` with no arguments) walks you through a **stateful wizard**. It always:
@@ -481,10 +599,28 @@ Despite all these protections, **VFIO passthrough remains an advanced configurat
 - Assumes a `systemd` environment.
 - Automatic bootloader editing is implemented only for GRUB; other bootloaders must be configured manually.
 - `wpctl` and a running PipeWire session are needed at runtime for the best audio experience.
-
----
-
-## FAQ
+-
++### Kernel compatibility note (6.13 and newer)
++
++The script is designed to be conservative around **kernel regressions** that affect VFIO binding, especially on AMD GPUs:
++
++- On some systems, kernels in the **6.13+ family** (or other very new default kernels) may still allow `amdgpu` to claim the guest GPU even when all recommended VFIO parameters are present.
++- In contrast, the distribution’s **long-term kernel** (for example `kernel-longterm` on openSUSE) has been observed to bind the same GPU cleanly to `vfio-pci` with identical settings.
++- Because this can change from release to release, the helper does **not** try to guess future kernel behavior; instead, it:
++  - Detects that the guest GPU is not on `vfio-pci`.
++  - Suggests using the long-term kernel as a known‑good baseline.
++
++If your distribution updates to a newer kernel (such as 6.13 or later) and VFIO binding breaks again, you may need to:
++
++- Boot the long-term / older kernel that is known to work.
++- Re-run `./vfio.sh --detect` to see how the new kernel is binding devices.
++- Wait for future script updates tuned for that kernel series once its behavior is better understood.
++
++The intent is to keep the script tracking real-world kernel behavior over time, rather than pretending all new kernels will always behave the same.
++
++---
++
++## FAQ
 
 ### Can I use this with libvirt/virt‑manager?
 

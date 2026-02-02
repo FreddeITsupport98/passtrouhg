@@ -1224,6 +1224,63 @@ $(printf '%s
 EOF
 }
 
+# On some openSUSE Tumbleweed systems with recent default kernels, AMD Navi
+# GPUs (such as 73bf) may still be claimed by amdgpu even when vfio-pci.ids=
+# and rd.driver.pre=vfio-pci are present. In testing, the distribution's
+# longterm kernel (package: kernel-longterm) behaved more predictably and
+# allowed vfio-pci to bind the GPU at boot. This helper does NOT force a
+# kernel switch automatically, but offers to install kernel-longterm so the
+# user can choose that entry at boot.
+maybe_offer_kernel_longterm() {
+  local guest_vendor_b10="$1" guest_gpu_bdf="$2"
+
+  # Only relevant on openSUSE-like systems using zypper.
+  if ! is_opensuse_like; then
+    return 0
+  fi
+  if ! have_cmd zypper; then
+    return 0
+  fi
+
+  # Only makes sense for AMD guest GPUs.
+  if [[ "${guest_vendor_b10,,}" != "1002" ]]; then
+    return 0
+  fi
+
+  # If the guest GPU is already bound to vfio-pci on this boot, there is no
+  # need to suggest an alternative kernel.
+  if [[ "$(bdf_driver_name "$guest_gpu_bdf")" == "vfio-pci" ]]; then
+    return 0
+  fi
+
+  # If kernel-longterm is already installed, nothing to do.
+  if rpm -q kernel-longterm >/dev/null 2>&1; then
+    return 0
+  fi
+
+  say
+  hdr "Optional: install long-term kernel for more reliable VFIO binding"
+  note "On some openSUSE Tumbleweed systems with AMD GPUs, the very newest default kernel can let amdgpu claim the guest GPU even when vfio-pci.ids= is set."
+  note "The distribution's long-term support kernel (package: kernel-longterm) often has a more conservative driver stack and has been observed to let vfio-pci bind cleanly."
+  note "Installing kernel-longterm keeps your current kernel installed; at boot you can pick either the default or the long-term kernel from the menu."
+
+  # If we detect that the guest GPU is still owned by amdgpu right now,
+  # strongly suggest installing the long-term kernel by making YES the
+  # default answer. Otherwise keep it as an opt-in.
+  local def="N"
+  if [[ "$(bdf_driver_name "$guest_gpu_bdf")" == "amdgpu" ]]; then
+    def="Y"
+    note "Right now the guest GPU ($guest_gpu_bdf) is driven by amdgpu; installing kernel-longterm is RECOMMENDED so vfio-pci can reliably bind it."
+  else
+    note "If you later find that amdgpu still owns the guest GPU after enabling VFIO, consider installing kernel-longterm manually: zypper in kernel-longterm."
+  fi
+
+  if prompt_yn "Install the kernel-longterm package now via zypper (optional, safe alongside the current kernel)?" "$def" "Kernel (optional)"; then
+    run zypper --non-interactive in kernel-longterm || \
+      note "kernel-longterm install via zypper failed; you can install it manually later with: zypper in kernel-longterm"
+  fi
+}
+
 install_dracut_config() {
   # Only applies on dracut-based systems.
   [[ -d /etc/dracut.conf.d ]] || return 0
@@ -1665,13 +1722,14 @@ systemd_boot_add_kernel_params() {
     # trigger a reboot loop. You can later remove this by running the
     # script with --reset or manually deleting systemd.unit=multi-user.target
     # from /etc/kernel/cmdline.
-    say
-    hdr "Boot target (persistence, optional)"
-    note "If your VFIO snapshot reboots as soon as the graphical desktop starts, it can be useful to boot only into text mode (multi-user.target)."
-    note "This makes the system stop at a console login so you can inspect logs without the display manager running."
-    if prompt_yn "Force the default boot target to multi-user.target (text mode) for now?" N "Boot target (persistence)"; then
-      new_cmdline="$(add_param_once "$new_cmdline" "systemd.unit=multi-user.target")"
-    fi
+  say
+  hdr "Boot target (persistence, optional)"
+  note "By default your system boots to the graphical desktop (graphical.target)."
+  note "If your VFIO setup causes the desktop or display manager to crash/reboot, you can instead boot to text mode (multi-user.target)."
+  note "In text mode, the system stops at a console login so you can inspect logs and fix things before starting the desktop manually."
+  if prompt_yn "Change the DEFAULT boot to multi-user.target (text mode) until you switch it back?" N "Boot target (persistence)"; then
+    new_cmdline="$(add_param_once "$new_cmdline" "systemd.unit=multi-user.target")"
+  fi
     
     # ACS Override check for cmdline file
     if prompt_yn "Enable ACS override in /etc/kernel/cmdline (persistence)?" N "Boot options (persistence)"; then
@@ -1912,9 +1970,10 @@ grub_add_kernel_params() {
   # from your GRUB kernel cmdline.
   say
   hdr "Boot target (optional)"
-  note "If your VFIO snapshot reboots as soon as the graphical desktop starts, it can be useful to boot only into text mode (multi-user.target)."
-  note "This makes the system stop at a console login so you can inspect logs without the display manager running."
-  if prompt_yn "Force the default boot target to multi-user.target (text mode) for now?" N "Boot target"; then
+  note "Normally your system boots straight into the graphical desktop (graphical.target)."
+  note "If VFIO makes the desktop or display manager unstable, you can boot to text mode instead (multi-user.target)."
+  note "In text mode, you'll land at a console login first and can start the desktop manually after checking logs (for example with journalctl -b)."
+  if prompt_yn "Change the DEFAULT boot to multi-user.target (text mode) until you switch it back?" N "Boot target"; then
     new="$(add_param_once "$new" "systemd.unit=multi-user.target")"
   fi
 
@@ -3298,6 +3357,15 @@ apply_configuration() {
   write_conf "$host_gpu" "$host_audio_bdfs_csv" "$host_audio_node_name" "$guest_gpu" "$guest_audio_csv" "$guest_vendor"
   install_vfio_modules_load
 
+  # Optional: on openSUSE Tumbleweed offer to install the distribution's
+  # long-term kernel. In real-world testing this kernel can make VFIO
+  # binding more reliable for some AMD Navi GPUs by avoiding very recent
+  # amdgpu changes that aggressively claim the device even when vfio-pci
+  # is requested. We only suggest this for AMD guest GPUs and when the
+  # current boot still shows amdgpu as the active driver for the guest
+  # BDF, and in that case we default the prompt to YES.
+  maybe_offer_kernel_longterm "$guest_vendor" "$guest_gpu"
+
   say
   hdr "Initramfs integration"
 
@@ -3347,11 +3415,12 @@ apply_configuration() {
   say
   hdr "Boot log capture (optional)"
   note "You can automatically dump the current boot's journal to a vfio-boot-*.log file on your desktop after each boot."
-  note "This is useful for debugging passthrough problems without needing to remember journalctl commands."
-  if prompt_yn "Install a small helper that saves a VFIO boot log to your Desktop on every boot?" Y "Boot log capture"; then
+  note "This is mainly useful when you are actively debugging passthrough problems and want to keep per-boot logs around."
+  note "On a stable setup it is usually not necessary and can create a lot of log files over time."
+  if prompt_yn "Install a small helper that saves a VFIO boot log to your Desktop on every boot?" N "Boot log capture"; then
     install_bootlog_dumper
   else
-    note "Skipping boot log dumper; you can always inspect logs manually with journalctl -b."
+    note "Skipping boot log dumper; you can always inspect logs manually with journalctl -b when needed."
   fi
 
   say
