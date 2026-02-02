@@ -197,27 +197,32 @@ parse_args() {
   fi
 }
 
-# Disable only the optional VFIO boot log dumper without touching the rest
-# of the VFIO configuration.
+# Disable and remove the optional VFIO boot log dumper without touching the
+# rest of the VFIO configuration.
 disable_bootlog_dumper() {
   hdr "Disable VFIO boot log dumper"
 
   local unit="/etc/systemd/system/vfio-dump-boot-log.service"
+  local bin="/home/${SUDO_USER:-root}/.local/bin/vfio-dump-boot-log.sh"
 
-  if ! [[ -f "$unit" ]]; then
-    note "Boot log dumper unit not found; nothing to disable."
+  if ! [[ -f "$unit" || -f "$bin" ]]; then
+    note "Boot log dumper unit/script not found; nothing to disable."
     return 0
   fi
 
-  if command -v systemctl >/dev/null 2>&1; then
+  if command -v systemctl >/dev/null 2>&1 && [[ -f "$unit" ]]; then
     note "Disabling and stopping vfio-dump-boot-log.service (VFIO setup will remain active)."
     run systemctl disable --now vfio-dump-boot-log.service 2>/dev/null || true
     run systemctl daemon-reload 2>/dev/null || true
-  else
-    note "systemctl not found; please disable vfio-dump-boot-log.service manually if needed."
+  elif ! command -v systemctl >/dev/null 2>&1; then
+    note "systemctl not found; disabling the service automatically is not possible."
   fi
 
-  say "Boot log dumper disabled. Existing log files under ~/Desktop/vfio-boot-logs are left untouched."
+  # Remove the unit and helper script (if present). This mirrors the paths
+  # used by install_bootlog_dumper and reset_vfio_all.
+  run rm -f "$unit" "$bin" 2>/dev/null || true
+
+  say "Boot log dumper disabled and removed. Existing log files under ~/Desktop/vfio-boot-logs are left untouched."
 }
 
 write_file_atomic() {
