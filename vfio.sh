@@ -2762,7 +2762,7 @@ verify_setup() {
     say "WARN: /sys/kernel/iommu_groups not present. IOMMU may be disabled in BIOS/kernel."
   fi
 
-  # Kernel cmdline + GRUB sanity (if available)
+  # Kernel cmdline + bootloader sanity (if available)
   say
   if [[ -r /proc/cmdline ]]; then
     local cmd
@@ -2783,6 +2783,47 @@ verify_setup() {
         say "OK: /etc/default/grub contains iommu=pt"
       else
         say "WARN: /etc/default/grub missing iommu=pt (did you skip GRUB edit?)"
+      fi
+    fi
+  fi
+
+  # On openSUSE/BLS, also check the CURRENT Boot Loader Spec entry that
+  # was used to boot this kernel, so you know whether that exact entry
+  # has the expected VFIO/IOMMU flags.
+  if is_opensuse_like && command -v sdbootutil >/dev/null 2>&1; then
+    say
+    say "-- Current BLS entry (openSUSE) --"
+    local running_cmdline bls_dir entry opts
+    running_cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
+    bls_dir="$(systemd_boot_entries_dir 2>/dev/null || true)"
+    if [[ -n "$bls_dir" && -n "$running_cmdline" ]]; then
+      local running_root running_rootflags
+      running_root="$(sed -n 's/.*\<root=\([^ ]*\).*/\1/p' <<<"$running_cmdline")"
+      running_rootflags="$(sed -nE 's/.*rootflags="?([^ "]+)"?.*/\1/p' <<<"$running_cmdline")"
+      if [[ -n "$running_root" && -n "$running_rootflags" ]]; then
+        local f
+        shopt -s nullglob
+        for f in "$bls_dir"/*.conf; do
+          opts="$(grep -m1 -E '^options[[:space:]]+' "$f" 2>/dev/null | sed -E 's/^options[[:space:]]+//')"
+          opts="$(trim "${opts:-}")"
+          [[ -n "$opts" ]] || continue
+          local eroot eflags
+          eroot="$(sed -n 's/.*\<root=\([^ ]*\).*/\1/p' <<<"$opts")"
+          eflags="$(sed -nE 's/.*rootflags="?([^ "]+)"?.*/\1/p' <<<"$opts")"
+          if [[ -n "$eroot" && -n "$eflags" && "$eroot" == "$running_root" && "$eflags" == "$running_rootflags" ]]; then
+            say "BLS entry: $(basename "$f")"
+            if grep -qwE 'amd_iommu=on|intel_iommu=on' <<<"$opts" && \
+               grep -qw "iommu=pt" <<<"$opts" && \
+               grep -qw "rd.driver.pre=vfio-pci" <<<"$opts"; then
+              say "OK: current BLS options contain IOMMU + rd.driver.pre=vfio-pci"
+            else
+              say "WARN: current BLS options are missing some of: amd_iommu/intel_iommu, iommu=pt, rd.driver.pre=vfio-pci"
+              say "      You may want to re-run the installer on this snapshot to update /etc/kernel/cmdline and BLS entries."
+            fi
+            break
+          fi
+        done
+        shopt -u nullglob
       fi
     fi
   fi
