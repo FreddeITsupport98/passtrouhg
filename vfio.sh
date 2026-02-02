@@ -2695,15 +2695,27 @@ verify_setup() {
 
   # Basic sanity
   if [[ -z "${GUEST_GPU_BDF:-}" ]]; then
-    say "FAIL: GUEST_GPU_BDF is missing in $CONF_FILE"
+    if (( ENABLE_COLOR )); then
+      say "${C_RED}✖ FAIL${C_RESET}: GUEST_GPU_BDF is missing in $CONF_FILE"
+    else
+      say "FAIL: GUEST_GPU_BDF is missing in $CONF_FILE"
+    fi
     ok=0
   else
     if [[ "$(bdf_driver_name "$GUEST_GPU_BDF")" != "vfio-pci" ]]; then
-      say "FAIL: Guest GPU $GUEST_GPU_BDF is not bound to vfio-pci (driver: $(bdf_driver_name "$GUEST_GPU_BDF"))"
+      if (( ENABLE_COLOR )); then
+        say "${C_RED}✖ FAIL${C_RESET}: Guest GPU $GUEST_GPU_BDF is not bound to vfio-pci (driver: $(bdf_driver_name "$GUEST_GPU_BDF"))"
+      else
+        say "FAIL: Guest GPU $GUEST_GPU_BDF is not bound to vfio-pci (driver: $(bdf_driver_name "$GUEST_GPU_BDF"))"
+      fi
       note "This is expected BEFORE reboot (or if the vfio bind service isn't enabled)."
       ok=0
     else
-      say "OK: Guest GPU $GUEST_GPU_BDF bound to vfio-pci"
+      if (( ENABLE_COLOR )); then
+        say "${C_GREEN}✔ OK${C_RESET}: Guest GPU $GUEST_GPU_BDF bound to vfio-pci"
+      else
+        say "OK: Guest GPU $GUEST_GPU_BDF bound to vfio-pci"
+      fi
     fi
   fi
 
@@ -2712,10 +2724,18 @@ verify_setup() {
     for dev in $GUEST_AUDIO_BDFS_CSV; do
       [[ -n "$dev" ]] || continue
       if [[ "$(bdf_driver_name "$dev")" != "vfio-pci" ]]; then
-        say "FAIL: Guest audio $dev is not bound to vfio-pci (driver: $(bdf_driver_name "$dev"))"
+        if (( ENABLE_COLOR )); then
+          say "${C_RED}✖ FAIL${C_RESET}: Guest audio $dev is not bound to vfio-pci (driver: $(bdf_driver_name "$dev"))"
+        else
+          say "FAIL: Guest audio $dev is not bound to vfio-pci (driver: $(bdf_driver_name "$dev"))"
+        fi
         ok=0
       else
-        say "OK: Guest audio $dev bound to vfio-pci"
+        if (( ENABLE_COLOR )); then
+          say "${C_GREEN}✔ OK${C_RESET}: Guest audio $dev bound to vfio-pci"
+        else
+          say "OK: Guest audio $dev bound to vfio-pci"
+        fi
       fi
     done
   fi
@@ -2723,23 +2743,39 @@ verify_setup() {
   if [[ -n "${HOST_AUDIO_BDFS_CSV:-}" ]]; then
     local host_audio="${HOST_AUDIO_BDFS_CSV%%,*}"
     if [[ "$(bdf_driver_name "$host_audio")" == "vfio-pci" ]]; then
-      say "FAIL: Host audio $host_audio is bound to vfio-pci (should remain on host driver)"
+      if (( ENABLE_COLOR )); then
+        say "${C_RED}✖ FAIL${C_RESET}: Host audio $host_audio is bound to vfio-pci (should remain on host driver)"
+      else
+        say "FAIL: Host audio $host_audio is bound to vfio-pci (should remain on host driver)"
+      fi
       ok=0
     else
-      say "OK: Host audio $host_audio driver: $(bdf_driver_name "$host_audio")"
+      if (( ENABLE_COLOR )); then
+        say "${C_GREEN}✔ OK${C_RESET}: Host audio $host_audio driver: $(bdf_driver_name "$host_audio")"
+      else
+        say "OK: Host audio $host_audio driver: $(bdf_driver_name "$host_audio")"
+      fi
     fi
   fi
 
   # Check that our files/services exist (best-effort)
   say
   if [[ -f "$BIND_SCRIPT" ]]; then
-    say "OK: Bind script present: $BIND_SCRIPT"
+    if (( ENABLE_COLOR )); then
+      say "${C_GREEN}✔ OK${C_RESET}: Bind script present: $BIND_SCRIPT"
+    else
+      say "OK: Bind script present: $BIND_SCRIPT"
+    fi
   else
     say "WARN: Bind script missing: $BIND_SCRIPT"
   fi
 
   if [[ -f "$SYSTEMD_UNIT" ]]; then
-    say "OK: Systemd unit present: $SYSTEMD_UNIT"
+    if (( ENABLE_COLOR )); then
+      say "${C_GREEN}✔ OK${C_RESET}: Systemd unit present: $SYSTEMD_UNIT"
+    else
+      say "OK: Systemd unit present: $SYSTEMD_UNIT"
+    fi
     if command -v systemctl >/dev/null 2>&1; then
       local enabled active
       enabled="$(systemctl is-enabled vfio-bind-selected-gpu.service 2>/dev/null || true)"
@@ -2758,7 +2794,11 @@ verify_setup() {
       local g
       g="$(iommu_group_of_bdf "$GUEST_GPU_BDF" 2>/dev/null || true)"
       if [[ -n "$g" ]]; then
-        say "OK: IOMMU group exists for guest GPU ($GUEST_GPU_BDF): group $g"
+        if (( ENABLE_COLOR )); then
+          say "${C_GREEN}✔ OK${C_RESET}: IOMMU group exists for guest GPU ($GUEST_GPU_BDF): group $g"
+        else
+          say "OK: IOMMU group exists for guest GPU ($GUEST_GPU_BDF): group $g"
+        fi
       else
         say "WARN: No IOMMU group found for guest GPU ($GUEST_GPU_BDF). IOMMU may be disabled."
       fi
@@ -2773,7 +2813,11 @@ verify_setup() {
     local cmd
     cmd="$(cat /proc/cmdline 2>/dev/null || true)"
     if grep -qw "iommu=pt" <<<"$cmd"; then
-      say "OK: Running kernel cmdline contains iommu=pt"
+      if (( ENABLE_COLOR )); then
+        say "${C_GREEN}✔ OK${C_RESET}: Running kernel cmdline contains iommu=pt"
+      else
+        say "OK: Running kernel cmdline contains iommu=pt"
+      fi
     else
       say "WARN: Running kernel cmdline does NOT contain iommu=pt"
     fi
@@ -2785,7 +2829,11 @@ verify_setup() {
     if [[ -n "$key" ]]; then
       current="$(grub_read_cmdline "$key" 2>/dev/null || true)"
       if grep -qw "iommu=pt" <<<"$current"; then
-        say "OK: /etc/default/grub contains iommu=pt"
+        if (( ENABLE_COLOR )); then
+          say "${C_GREEN}✔ OK${C_RESET}: /etc/default/grub contains iommu=pt"
+        else
+          say "OK: /etc/default/grub contains iommu=pt"
+        fi
       else
         say "WARN: /etc/default/grub missing iommu=pt (did you skip GRUB edit?)"
       fi
@@ -2820,7 +2868,11 @@ verify_setup() {
             if grep -qwE 'amd_iommu=on|intel_iommu=on' <<<"$opts" && \
                grep -qw "iommu=pt" <<<"$opts" && \
                grep -qw "rd.driver.pre=vfio-pci" <<<"$opts"; then
-              say "OK: current BLS options contain IOMMU + rd.driver.pre=vfio-pci"
+              if (( ENABLE_COLOR )); then
+                say "${C_GREEN}✔ OK${C_RESET}: current BLS options contain IOMMU + rd.driver.pre=vfio-pci"
+              else
+                say "OK: current BLS options contain IOMMU + rd.driver.pre=vfio-pci"
+              fi
             else
               say "WARN: current BLS options are missing some of: amd_iommu/intel_iommu, iommu=pt, rd.driver.pre=vfio-pci"
               say "      You may want to re-run the installer on this snapshot to update /etc/kernel/cmdline and BLS entries."
@@ -2835,10 +2887,18 @@ verify_setup() {
 
   say
   if (( ok )); then
-    say "RESULT: PASS (guest devices are on vfio-pci; host audio is not)"
+    if (( ENABLE_COLOR )); then
+      say "${C_GREEN}✔ RESULT: PASS${C_RESET} (guest devices are on vfio-pci; host audio is not)"
+    else
+      say "RESULT: PASS (guest devices are on vfio-pci; host audio is not)"
+    fi
     return 0
   fi
-  say "RESULT: FAIL (see messages above)"
+  if (( ENABLE_COLOR )); then
+    say "${C_RED}✖ RESULT: FAIL${C_RESET} (see messages above)"
+  else
+    say "RESULT: FAIL (see messages above)"
+  fi
   return 1
 }
 
