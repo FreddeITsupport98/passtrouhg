@@ -174,14 +174,19 @@ The script supports several modes controlled by flags. By default, without any f
   - Intended to catch environment regressions early.
 
 - `--reset`
-  - **Destructive clean‑up** of everything this script manages.
+  - **Destructive clean-up** of everything this script manages.
   - Requires confirmation by typing a phrase (`RESET VFIO`).
   - Performs:
-    - Disables and stops `vfio-bind-selected-gpu.service`.
-    - Removes its systemd unit, bind script, audio script, config, vfio modules‑load entry, and optional blacklist.
+    - Disables and stops `vfio-bind-selected-gpu.service` and, if installed, the VFIO boot-log dumper service.
+    - Removes its systemd unit, bind script, audio script, config, vfio modules‑load entry, optional blacklist, and optional boot-log helper.
     - Optionally removes user systemd audio units under `/home/*`.
-    - Offers to remove VFIO/IOMMU kernel parameters from `/etc/default/grub` and regenerate `grub.cfg`.
+    - Optionally removes VFIO/IOMMU and related debug kernel parameters from:
+      - `/etc/default/grub` on classic GRUB systems, with:
+        - Automatic `grub.cfg` regeneration.
+        - A **GRUB syntax check** (`grub2-script-check`/`grub-script-check` when available) and automatic rollback to the backed‑up `/etc/default/grub` if the new config would cause lexer errors at boot.
+      - `/etc/kernel/cmdline` on openSUSE/BLS systems, followed by a quiet `sdbootutil add-all-kernels` + `update-all-entries` to sync BLS entries.
     - Rebuilds initramfs to reflect the cleaned‑up configuration.
+  - On openSUSE/Btrfs systems, prints a reminder that each snapshot has its own `/etc/kernel/cmdline`; after rolling back to an older snapshot you should re-run `--reset` from within that snapshot if you want its VFIO parameters removed as well.
 
 ---
 
@@ -216,6 +221,8 @@ The script does **not** attempt to manage LSM policy, but for safer VFIO testing
 
 This is always presented as an **explicit prompt**; you can decline if you actively rely on SELinux/AppArmor and know how to manage their policies across snapshots.
 
+On reset, the script can also remove these LSM-related parameters again from both classic GRUB cmdlines and `/etc/kernel/cmdline` (on openSUSE/BLS) so that rollbacks don’t permanently lock you into a “VFIO debug” LSM configuration.
+
 ### Dracut and early VFIO binding (`rd.driver.pre=vfio-pci`)
 
 On **dracut-based** systems (including openSUSE Tumbleweed and many Fedora/RHEL style installs), the GPU driver may be pulled into the initramfs very early. If the host driver (`amdgpu`, `nvidia`, `i915`) loads before `vfio-pci`, passthrough can fail even if your GRUB/BLS parameters otherwise look correct.
@@ -230,6 +237,13 @@ To address this the script:
 
 If `vfio-pci` is missing for the current kernel, the script deliberately **does not** add `rd.driver.pre=vfio-pci` (to avoid early-boot modprobe failures).
 
+On openSUSE BLS systems, after changing `/etc/kernel/cmdline` the script automatically runs:
+
+- `sdbootutil add-all-kernels`
+- `sdbootutil update-all-entries`
+
+These are invoked quietly (errors are caught and turned into informational notes) so that Boot Loader Spec entries stay in sync with the updated kernel parameters without spamming low-level `sed` errors from `sdbootutil`.
+
 ### Boot log dumper for VFIO debugging
 
 The script can install a small helper + systemd service that automatically dumps detailed **boot logs for VFIO-related debugging** to your desktop after each boot:
@@ -242,6 +256,12 @@ The script can install a small helper + systemd service that automatically dumps
   - It encodes the snapshot or subvolume name into the path so you can tell which snapshot a log came from.
 
 This makes it much easier to see what happened on a failing VFIO snapshot **without** needing to dig around with `journalctl -b -1` or similar commands.
+
+The boot log dumper is **off by default**:
+
+- The installer explains that this helper is mainly useful while you are actively debugging VFIO failures.
+- On a stable setup it can generate many log files over time.
+- The prompt default is **No**; you must explicitly opt in if you want per-boot log files on your desktop.
 
 ### udev isolation rules for the guest GPU
 
@@ -274,6 +294,8 @@ You can force plain-text mode even when `whiptail` is present by using:
 
 This is useful when running over SSH or inside environments where TUI dialogs are undesirable.
 
+In both TUI and plain-text modes the script clearly highlights **dangerous operations** (like uninstalling the default kernel on openSUSE) with bold/red warnings when ANSI colors are enabled, and with explicit "DANGER" text when colors are not available.
+
 ### Long-term kernel recommendation for some AMD setups
 
 On some AMD Navi setups (for example, GPUs with PCI IDs similar to `1002:73bf`), very recent default kernels have been observed to let `amdgpu` claim the guest GPU even when:
@@ -297,9 +319,28 @@ The script encapsulates this as an **optional helper**, not a forced behavior:
 
 Importantly:
 
-- The script **does not remove** your existing kernel.
+- The script **does not remove** your existing kernel by default.
 - After installation, you can choose either the default kernel or the long-term kernel from your boot menu.
 - All other VFIO logic (IOMMU params, initramfs updates, binding service) works the same; the long-term kernel is just another, often more stable, option.
+
+### Advanced (openSUSE only): removing the default kernel when kernel-longterm is installed
+
+For power users on openSUSE who are confident they only want to run the distribution’s **long-term kernel**, the script offers an **advanced, opt-in** step:
+
+- This prompt only appears if:
+  - The system is detected as openSUSE-like, and
+  - The `kernel-longterm` package is installed.
+- You are shown a **red DANGER warning** (when ANSI colors are enabled) explaining that:
+  - Removing the default kernel means you will **no longer have a fallback kernel** if `kernel-longterm` ever fails to boot.
+- The prompt is:
+  - "Uninstall the default kernel package (e.g. kernel-default) and keep only kernel-longterm?"
+  - **Default answer:** `No` (strongly recommended for most users).
+- If you explicitly answer **Yes**, the script will:
+  - Attempt to remove the common default kernel packages via:
+    - `zypper --non-interactive rm kernel-default kernel-default-base kernel-default-extra`
+  - Then refresh Boot Loader Spec entries using `sdbootutil add-all-kernels` and `sdbootutil update-all-entries` so that boot entries match the new kernel set.
+
+If any of the packages are not installed, `zypper` simply ignores them. If the removal fails, the script prints a note and leaves package management up to you.
 
 ---
 
@@ -600,7 +641,7 @@ Despite all these protections, **VFIO passthrough remains an advanced configurat
 - Automatic bootloader editing is implemented only for GRUB; other bootloaders must be configured manually.
 - `wpctl` and a running PipeWire session are needed at runtime for the best audio experience.
 -
-+### Kernel compatibility note (6.13 and newer)
+### Kernel compatibility note (6.13 and newer)
 +
 +The script is designed to be conservative around **kernel regressions** that affect VFIO binding, especially on AMD GPUs:
 +
@@ -610,13 +651,25 @@ Despite all these protections, **VFIO passthrough remains an advanced configurat
 +  - Detects that the guest GPU is not on `vfio-pci`.
 +  - Suggests using the long-term kernel as a known‑good baseline.
 +
-+If your distribution updates to a newer kernel (such as 6.13 or later) and VFIO binding breaks again, you may need to:
-+
-+- Boot the long-term / older kernel that is known to work.
-+- Re-run `./vfio.sh --detect` to see how the new kernel is binding devices.
-+- Wait for future script updates tuned for that kernel series once its behavior is better understood.
-+
-+The intent is to keep the script tracking real-world kernel behavior over time, rather than pretending all new kernels will always behave the same.
+If your distribution updates to a newer kernel (such as 6.13 or later) and VFIO binding breaks again, you may need to:
+
+- Boot the long-term / older kernel that is known to work.
+- Re-run `./vfio.sh --detect` to see how the new kernel is binding devices.
+- Wait for future script updates tuned for that kernel series once its behavior is better understood.
+
+The intent is to keep the script tracking real-world kernel behavior over time, rather than pretending all new kernels will always behave the same.
+
+On openSUSE with Btrfs snapshots, remember that **each snapshot has its own `/etc/kernel/cmdline`**:
+
+- When you run `./vfio.sh --reset`, only the **currently booted** snapshot’s kernel parameters are cleaned.
+- If you later roll back to an older snapshot, that snapshot may still contain older VFIO/IOMMU parameters.
+- After a rollback, you should run:
+
+```bash path=null start=null
+sudo ./vfio.sh --reset
+```
+
+inside the rolled-back snapshot if you also want its kernel parameters cleaned up.
 +
 +---
 +
