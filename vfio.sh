@@ -793,44 +793,49 @@ detect_existing_vfio_report() {
     fi
   fi
 
-  # BLS / systemd-boot entries (for openSUSE and other BLS users)
-  local bls_dir
-  bls_dir="$(systemd_boot_entries_dir 2>/dev/null || true)"
-  if [[ -n "$bls_dir" ]]; then
-    say
-    say "-- Boot Loader Spec entries (IOMMU/VFIO params) --"
-    local f opts
-    shopt -s nullglob
-    for f in "$bls_dir"/*.conf; do
-      opts="$(grep -m1 -E '^options[[:space:]]+' "$f" 2>/dev/null | sed -E 's/^options[[:space:]]+//')"
-      opts="$(trim "${opts:-}")"
-      if [[ -z "$opts" ]]; then
-        print_kv "$(basename "$f")" "<no options line>"
-        continue
-      fi
-
-      local -a missing=()
-      if ! grep -qwE 'amd_iommu=on|intel_iommu=on' <<<"$opts"; then
-        missing+=("iommu_on")
-      fi
-      if ! grep -qw "iommu=pt" <<<"$opts"; then
-        missing+=("iommu_pt")
-      fi
-      # On openSUSE dracut systems, rd.driver.pre=vfio-pci is highly
-      # recommended, so we flag its absence separately.
-      if is_opensuse_like && command -v dracut >/dev/null 2>&1; then
-        if ! grep -qw "rd.driver.pre=vfio-pci" <<<"$opts"; then
-          missing+=("rd.driver.pre=vfio-pci")
+  # BLS / systemd-boot entries (for openSUSE and other BLS users).
+  # In full reports (e.g. --detect) we show ALL entries; in brief
+  # reports (e.g. --verify) we skip this verbose listing and rely on
+  # the dedicated current-entry check instead.
+  if [[ -z "${VFIO_BRIEF_REPORT:-}" ]]; then
+    local bls_dir
+    bls_dir="$(systemd_boot_entries_dir 2>/dev/null || true)"
+    if [[ -n "$bls_dir" ]]; then
+      say
+      say "-- Boot Loader Spec entries (IOMMU/VFIO params) --"
+      local f opts
+      shopt -s nullglob
+      for f in "$bls_dir"/*.conf; do
+        opts="$(grep -m1 -E '^options[[:space:]]+' "$f" 2>/dev/null | sed -E 's/^options[[:space:]]+//')"
+        opts="$(trim "${opts:-}")"
+        if [[ -z "$opts" ]]; then
+          print_kv "$(basename "$f")" "<no options line>"
+          continue
         fi
-      fi
 
-      if (( ${#missing[@]} == 0 )); then
-        print_kv "$(basename "$f")" "OK (IOMMU + VFIO params present)"
-      else
-        print_kv "$(basename "$f")" "WARN missing: ${missing[*]}"
-      fi
-    done
-    shopt -u nullglob
+        local -a missing=()
+        if ! grep -qwE 'amd_iommu=on|intel_iommu=on' <<<"$opts"; then
+          missing+=("iommu_on")
+        fi
+        if ! grep -qw "iommu=pt" <<<"$opts"; then
+          missing+=("iommu_pt")
+        fi
+        # On openSUSE dracut systems, rd.driver.pre=vfio-pci is highly
+        # recommended, so we flag its absence separately.
+        if is_opensuse_like && command -v dracut >/dev/null 2>&1; then
+          if ! grep -qw "rd.driver.pre=vfio-pci" <<<"$opts"; then
+            missing+=("rd.driver.pre=vfio-pci")
+          fi
+        fi
+
+        if (( ${#missing[@]} == 0 )); then
+          print_kv "$(basename "$f")" "OK (IOMMU + VFIO params present)"
+        else
+          print_kv "$(basename "$f")" "WARN missing: ${missing[*]}"
+        fi
+      done
+      shopt -u nullglob
+    fi
   fi
 
   # Current device bindings
@@ -2674,7 +2679,7 @@ EOF
 
 verify_setup() {
   hdr "VERIFY VFIO SETUP"
-  detect_existing_vfio_report
+  VFIO_BRIEF_REPORT=1 detect_existing_vfio_report
 
   [[ -f "$CONF_FILE" ]] || die "Missing $CONF_FILE (nothing to verify)."
   # shellcheck disable=SC1090
