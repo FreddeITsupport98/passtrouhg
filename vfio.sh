@@ -825,9 +825,18 @@ detect_existing_vfio_report() {
     say "-- initramfs tooling detected --"
   fi
   if (( ENABLE_COLOR )); then
-    print_kv "update-initramfs" "${C_DIM}$(command -v update-initramfs >/dev/null 2>&1 && echo yes || echo no)${C_RESET}"
-    print_kv "mkinitcpio" "${C_DIM}$(command -v mkinitcpio >/dev/null 2>&1 && echo yes || echo no)${C_RESET}"
-    print_kv "dracut" "${C_DIM}$(command -v dracut >/dev/null 2>&1 && echo yes || echo no)${C_RESET}"
+    local u_i m_i d_i
+    u_i="$(command -v update-initramfs >/dev/null 2>&1 && echo yes || echo no)"
+    m_i="$(command -v mkinitcpio >/dev/null 2>&1 && echo yes || echo no)"
+    d_i="$(command -v dracut >/dev/null 2>&1 && echo yes || echo no)"
+
+    [[ "$u_i" == yes ]] && u_i="${C_GREEN}yes${C_RESET}" || u_i="${C_RED}no${C_RESET}"
+    [[ "$m_i" == yes ]] && m_i="${C_GREEN}yes${C_RESET}" || m_i="${C_RED}no${C_RESET}"
+    [[ "$d_i" == yes ]] && d_i="${C_GREEN}yes${C_RESET}" || d_i="${C_RED}no${C_RESET}"
+
+    print_kv "update-initramfs" "$u_i"
+    print_kv "mkinitcpio" "$m_i"
+    print_kv "dracut" "$d_i"
   else
     print_kv "update-initramfs" "$(command -v update-initramfs >/dev/null 2>&1 && echo yes || echo no)"
     print_kv "mkinitcpio" "$(command -v mkinitcpio >/dev/null 2>&1 && echo yes || echo no)"
@@ -838,7 +847,11 @@ detect_existing_vfio_report() {
     print_kv "vfio in initramfs-tools/modules" "$(grep -nE '^(vfio|vfio_pci|vfio-iommu-type1|vfio_virqfd)' /etc/initramfs-tools/modules 2>/dev/null | tr '\n' ' ' || true)"
   fi
   if [[ -d /etc/dracut.conf.d ]]; then
-    print_kv "/etc/dracut.conf.d" "present"
+    if (( ENABLE_COLOR )); then
+      print_kv "/etc/dracut.conf.d" "${C_GREEN}present${C_RESET}"
+    else
+      print_kv "/etc.dracut.conf.d" "present"
+    fi
     print_kv "vfio in dracut conf" "$(grep -RIn --no-messages -E 'vfio|vfio-pci|add_drivers|force_drivers' /etc/dracut.conf.d 2>/dev/null | head -n 20 | tr '\n' ' ' || true)"
   fi
 
