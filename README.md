@@ -151,8 +151,10 @@ The script supports several modes controlled by flags. By default, without any f
     - Whether the configured guest GPU and guest audio devices are currently bound to `vfio-pci`.
     - Whether the host audio device is *not* bound to `vfio-pci`.
     - Presence and enablement of the systemd service and scripts.
-    - Basic IOMMU presence and GRUB kernel parameters.
-  - Prints a PASS/FAIL summary.
+    - Basic IOMMU presence and GRUB/BLS kernel parameters.
+  - Prints a PASS/FAIL summary with **colorful status markers** when ANSI colors are enabled:
+    - Green `✔ OK` for good checks, red `✖ FAIL` for hard failures, yellow `WARN` for soft issues.
+    - A final `✔ RESULT: PASS` or `✖ RESULT: FAIL` line, so you can see at a glance whether the current boot is VFIO‑ready.
 
 - `--detect`
   - Scans your system and prints a rich **VFIO / passthrough detection report** including:
@@ -163,6 +165,9 @@ The script supports several modes controlled by flags. By default, without any f
     - Detected initramfs framework(s) and whether VFIO is referenced there.
     - Current GPU & audio bindings from `lspci -nnk`.
     - Libvirt hook directory presence.
+  - The report is **color‑aware** when ANSI colors are available:
+    - Section headers use cyan, good resources and paths use green, and problems or missing pieces show up as yellow/red.
+    - GPU and audio BDFs are highlighted in green so you can quickly spot which device is which.
 
 - `--self-test`
   - Runs a small self test suite:
