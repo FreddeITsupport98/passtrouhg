@@ -522,11 +522,22 @@ check_secure_boot() {
   fi
 }
 
+# Return 0 if any of the typical early framebuffers (simpledrm/sysfb/efifb/
+# vesafb) appear as reserved memory in /proc/iomem. This is a strong hint
+# that the boot console is still attached to the GPU and can interfere with
+# VFIO binding.
+simplefb_lock_active() {
+  grep -qiE '(simple-framebuffer|simpledrm|efifb|vesafb|EFI Framebuffer)' /proc/iomem 2>/dev/null
+}
+
 # Audit whether the *currently running* kernel looks hostile to VFIO for the
 # selected guest GPU. This is a diagnostic only; it does not change any
 # configuration. Results are summarized in CTX[kernel_vfio_risk]:
 #   0 = no obvious risk markers detected
-#   1 = high-risk kernel version and/or vfio-pci binding errors seen in dmesg
+#   1 = one or more risk markers detected (kernel version, IOMMU, logs, etc.)
+#
+# Additionally CTX[kernel_vfio_log_error]=1 is set if we find concrete
+# vfio-pci probe/BAR errors in the logs.
 #
 # If a GPU BDF is supplied, we also check who currently owns the device.
 # This is most useful AFTER you have already tried to boot with VFIO enabled.
@@ -536,6 +547,7 @@ audit_vfio_health() {
   hdr "VFIO Kernel Health Audit"
 
   CTX[kernel_vfio_risk]=0
+  CTX[kernel_vfio_log_error]=0
 
   # 1) Kernel version heuristic: 6.13+ is considered high risk unless the
   # distribution has explicitly backported a fix.
@@ -564,7 +576,25 @@ audit_vfio_health() {
     say "Kernel version parse ambiguous: $kver (skipping version-based risk heuristic)."
   fi
 
-  # 2) Runtime owner of the GPU (if a BDF was provided). This is *not* a
+  # 2) Check IOMMU and VFIO module availability.
+  say
+  say "Checking IOMMU and VFIO module availability ..."
+
+  if [[ -d /sys/kernel/iommu_groups ]] && ls /sys/kernel/iommu_groups/* >/dev/null 2>&1; then
+    say "OK: IOMMU groups directory present."
+  else
+    CTX[kernel_vfio_risk]=1
+    say "WARN: /sys/kernel/iommu_groups missing or empty (IOMMU may be disabled in BIOS or kernel cmdline)."
+  fi
+
+  if vfio_pci_available; then
+    say "OK: vfio-pci module is available for this kernel."
+  else
+    CTX[kernel_vfio_risk]=1
+    say "WARN: vfio-pci module not found by modinfo; VFIO GPU binding cannot work on this kernel."
+  fi
+
+  # 3) Runtime owner of the GPU (if a BDF was provided). This is *not* a
   # definitive regression check on its own because before the first reboot
   # we still expect the host driver to own the device. It is mostly useful
   # when you run this audit AFTER a failed VFIO boot.
@@ -572,12 +602,14 @@ audit_vfio_health() {
     say
     say "Checking current driver for GPU $gpu_bdf ..."
     if [[ ! -e "/sys/bus/pci/devices/$gpu_bdf" ]]; then
+      CTX[kernel_vfio_risk]=1
       if (( ENABLE_COLOR )); then
         say "${C_YELLOW}WARN${C_RESET}: PCI device $gpu_bdf not present in sysfs (hot-unplugged or wrong BDF?)."
       else
         say "WARN: PCI device $gpu_bdf not present in sysfs (hot-unplugged or wrong BDF?)."
       fi
     elif [[ ! -e "/sys/bus/pci/devices/$gpu_bdf/driver" ]]; then
+      CTX[kernel_vfio_risk]=1
       if (( ENABLE_COLOR )); then
         say "${C_YELLOW}WARN${C_RESET}: Device is not bound to ANY driver right now."
       else
@@ -594,28 +626,49 @@ audit_vfio_health() {
           say "OK: GPU $gpu_bdf is currently bound to vfio-pci."
         fi
       else
+        # Not necessarily a regression (especially before the first reboot),
+        # but worth surfacing.
         if (( ENABLE_COLOR )); then
           say "${C_YELLOW}INFO${C_RESET}: GPU $gpu_bdf is currently bound to '$driver_name' (not vfio-pci)."
         else
           say "INFO: GPU $gpu_bdf is currently bound to '$driver_name' (not vfio-pci)."
         fi
-        # Do NOT automatically mark this as a regression; before the first
-        # reboot we expect the host driver here. The real smoking gun is
-        # a combination of high-risk kernel + vfio-pci BAR reservation
-        # errors in dmesg.
       fi
     fi
   fi
 
-  # 3) dmesg scan for typical vfio-pci BAR / probe failures. These are
+  # 4) Check for active simpledrm/sysfb/efifb/vesafb locks.
+  say
+  say "Checking for active system framebuffers (simpledrm/sysfb/efifb/vesafb) ..."
+  if simplefb_lock_active; then
+    CTX[kernel_vfio_risk]=1
+    if (( ENABLE_COLOR )); then
+      say "${C_YELLOW}WARN${C_RESET}: A system framebuffer (simpledrm/sysfb/efifb/vesafb) is active in /proc/iomem."
+    else
+      say "WARN: A system framebuffer (simpledrm/sysfb/efifb/vesafb) is active in /proc/iomem."
+    fi
+    note "This often means the boot console is still attached to the GPU and can block vfio-pci from claiming it."
+    note "Consider enabling the framebuffer mitigation options (video=efifb:off video=vesafb:off initcall_blacklist=sysfb_init)."
+  else
+    say "OK: No obvious simpledrm/sysfb/efifb/vesafb regions in /proc/iomem."
+  fi
+
+  # 5) Log scan for typical vfio-pci BAR / probe failures. These are
   # strong indicators that the kernel (or another early driver like
   # simpledrm/sysfb) refused to give vfio-pci ownership of the device.
   say
-  say "Scanning dmesg for vfio-pci probe / BAR reservation errors ..."
+  say "Scanning kernel logs for vfio-pci probe / BAR reservation errors ..."
 
-  if ! have_cmd dmesg; then
-    say "dmesg command not available; skipping log-based checks."
-    return 0
+  local log_data
+  if have_cmd journalctl; then
+    log_data="$(journalctl -k -b --no-pager 2>/dev/null || true)"
+  else
+    if ! have_cmd dmesg; then
+      say "No journalctl or dmesg command available; skipping log-based checks."
+      log_data=""
+    else
+      log_data="$(dmesg 2>/dev/null || true)"
+    fi
   fi
 
   local dmesg_filter dmesg_out
@@ -626,25 +679,58 @@ audit_vfio_health() {
     dmesg_filter="vfio-pci"
   fi
 
-  dmesg_out="$(dmesg 2>/dev/null | grep -i "vfio-pci" | grep -E "failed|error|probe|can't reserve|cannot reserve|BAR" | grep -i "$dmesg_filter" || true)"
+  if [[ -n "$log_data" ]]; then
+    dmesg_out="$(printf '%s\n' "$log_data" | grep -i "vfio-pci" | grep -E "failed|error|probe|can't reserve|cannot reserve|BAR" | grep -i "$dmesg_filter" || true)"
+  else
+    dmesg_out=""
+  fi
 
   if [[ -n "$dmesg_out" ]]; then
     CTX[kernel_vfio_risk]=1
+    CTX[kernel_vfio_log_error]=1
     if (( ENABLE_COLOR )); then
-      say "${C_RED}CRITICAL${C_RESET}: Detected vfio-pci probe/BAR errors in dmesg that match this GPU/kernel."
+      say "${C_RED}CRITICAL${C_RESET}: Detected vfio-pci probe/BAR errors in kernel logs that match this GPU/kernel."
     else
-      say "CRITICAL: Detected vfio-pci probe/BAR errors in dmesg that match this GPU/kernel."
+      say "CRITICAL: Detected vfio-pci probe/BAR errors in kernel logs that match this GPU/kernel."
     fi
-    say "--- dmesg matches ---"
+    say "--- log matches ---"
     printf '%s\n' "$dmesg_out"
-    say "---------------------"
-    note "This strongly suggests the well-known simpledrm/sysfb regression where the kernel refuses to release the GPU BARs to vfio-pci."
+    say "-------------------"
+    note "This strongly suggests the simpledrm/sysfb regression where the kernel refuses to release the GPU BARs to vfio-pci."
   else
     if (( ENABLE_COLOR )); then
-      say "${C_GREEN}OK${C_RESET}: No obvious vfio-pci probe/BAR reservation errors found in dmesg."
+      say "${C_GREEN}OK${C_RESET}: No obvious vfio-pci probe/BAR reservation errors found in current boot logs."
     else
-      say "OK: No obvious vfio-pci probe/BAR reservation errors found in dmesg."
+      say "OK: No obvious vfio-pci probe/BAR reservation errors found in current boot logs."
     fi
+  fi
+
+  # 6) Final summary + exit code grading for --health-check.
+  local risk="${CTX[kernel_vfio_risk]:-0}"
+  local log_bad="${CTX[kernel_vfio_log_error]:-0}"
+
+  say
+  if (( risk == 0 )); then
+    if (( ENABLE_COLOR )); then
+      say "${C_GREEN}✔ HEALTH: PASS${C_RESET} (no obvious VFIO-hostile markers detected)"
+    else
+      say "HEALTH: PASS (no obvious VFIO-hostile markers detected)"
+    fi
+    return 0
+  elif (( log_bad == 1 )); then
+    if (( ENABLE_COLOR )); then
+      say "${C_RED}✖ HEALTH: FAIL${C_RESET} (vfio-pci probe/BAR errors seen in logs)"
+    else
+      say "HEALTH: FAIL (vfio-pci probe/BAR errors seen in logs)"
+    fi
+    return 2
+  else
+    if (( ENABLE_COLOR )); then
+      say "${C_YELLOW}⚠ HEALTH: WARN${C_RESET} (one or more VFIO risk markers detected; no hard vfio-pci errors yet)"
+    else
+      say "HEALTH: WARN (one or more VFIO risk markers detected; no hard vfio-pci errors yet)"
+    fi
+    return 1
   fi
 }
 
