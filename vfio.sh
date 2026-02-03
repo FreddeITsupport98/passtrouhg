@@ -518,6 +518,132 @@ check_secure_boot() {
   fi
 }
 
+# Audit whether the *currently running* kernel looks hostile to VFIO for the
+# selected guest GPU. This is a diagnostic only; it does not change any
+# configuration. Results are summarized in CTX[kernel_vfio_risk]:
+#   0 = no obvious risk markers detected
+#   1 = high-risk kernel version and/or vfio-pci binding errors seen in dmesg
+#
+# If a GPU BDF is supplied, we also check who currently owns the device.
+# This is most useful AFTER you have already tried to boot with VFIO enabled.
+audit_vfio_health() {
+  local gpu_bdf="${1:-}"
+
+  hdr "VFIO Kernel Health Audit"
+
+  CTX[kernel_vfio_risk]=0
+
+  # 1) Kernel version heuristic: 6.13+ is considered high risk unless the
+  # distribution has explicitly backported a fix.
+  local kver major minor
+  kver="$(uname -r 2>/dev/null || echo unknown)"
+  major="${kver%%.*}"
+  minor="${kver#*.}"
+  minor="${minor%%.*}"
+
+  if [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]]; then
+    if (( major > 6 || (major == 6 && minor >= 13) )); then
+      if (( ENABLE_COLOR )); then
+        say "${C_YELLOW}WARN${C_RESET}: Running kernel $kver is in the high-risk range for known VFIO/simpledrm regressions (>= 6.13)."
+      else
+        say "WARN: Running kernel $kver is in the high-risk range for known VFIO/simpledrm regressions (>= 6.13)."
+      fi
+      CTX[kernel_vfio_risk]=1
+    else
+      if (( ENABLE_COLOR )); then
+        say "${C_GREEN}OK${C_RESET}: Running kernel $kver is in the generally safe range for VFIO (< 6.13)."
+      else
+        say "OK: Running kernel $kver is in the generally safe range for VFIO (< 6.13)."
+      fi
+    fi
+  else
+    say "Kernel version parse ambiguous: $kver (skipping version-based risk heuristic)."
+  fi
+
+  # 2) Runtime owner of the GPU (if a BDF was provided). This is *not* a
+  # definitive regression check on its own because before the first reboot
+  # we still expect the host driver to own the device. It is mostly useful
+  # when you run this audit AFTER a failed VFIO boot.
+  if [[ -n "$gpu_bdf" ]]; then
+    say
+    say "Checking current driver for GPU $gpu_bdf ..."
+    if [[ ! -e "/sys/bus/pci/devices/$gpu_bdf" ]]; then
+      if (( ENABLE_COLOR )); then
+        say "${C_YELLOW}WARN${C_RESET}: PCI device $gpu_bdf not present in sysfs (hot-unplugged or wrong BDF?)."
+      else
+        say "WARN: PCI device $gpu_bdf not present in sysfs (hot-unplugged or wrong BDF?)."
+      fi
+    elif [[ ! -e "/sys/bus/pci/devices/$gpu_bdf/driver" ]]; then
+      if (( ENABLE_COLOR )); then
+        say "${C_YELLOW}WARN${C_RESET}: Device is not bound to ANY driver right now."
+      else
+        say "WARN: Device is not bound to ANY driver right now."
+      fi
+    else
+      local driver_path driver_name
+      driver_path="$(readlink -f "/sys/bus/pci/devices/$gpu_bdf/driver" 2>/dev/null || true)"
+      driver_name="${driver_path##*/}"
+      if [[ "$driver_name" == "vfio-pci" ]]; then
+        if (( ENABLE_COLOR )); then
+          say "${C_GREEN}OK${C_RESET}: GPU $gpu_bdf is currently bound to vfio-pci."
+        else
+          say "OK: GPU $gpu_bdf is currently bound to vfio-pci."
+        fi
+      else
+        if (( ENABLE_COLOR )); then
+          say "${C_YELLOW}INFO${C_RESET}: GPU $gpu_bdf is currently bound to '$driver_name' (not vfio-pci)."
+        else
+          say "INFO: GPU $gpu_bdf is currently bound to '$driver_name' (not vfio-pci)."
+        fi
+        # Do NOT automatically mark this as a regression; before the first
+        # reboot we expect the host driver here. The real smoking gun is
+        # a combination of high-risk kernel + vfio-pci BAR reservation
+        # errors in dmesg.
+      fi
+    fi
+  fi
+
+  # 3) dmesg scan for typical vfio-pci BAR / probe failures. These are
+  # strong indicators that the kernel (or another early driver like
+  # simpledrm/sysfb) refused to give vfio-pci ownership of the device.
+  say
+  say "Scanning dmesg for vfio-pci probe / BAR reservation errors ..."
+
+  if ! have_cmd dmesg; then
+    say "dmesg command not available; skipping log-based checks."
+    return 0
+  fi
+
+  local dmesg_filter dmesg_out
+  if [[ -n "$gpu_bdf" ]]; then
+    # Match either the full BDF or just the slot (some messages only print slot)
+    dmesg_filter="$(printf '%s' "$gpu_bdf" | sed 's/\\./:/')"
+  else
+    dmesg_filter="vfio-pci"
+  fi
+
+  dmesg_out="$(dmesg 2>/dev/null | grep -i "vfio-pci" | grep -E "failed|error|probe|can't reserve|cannot reserve|BAR" | grep -i "$dmesg_filter" || true)"
+
+  if [[ -n "$dmesg_out" ]]; then
+    CTX[kernel_vfio_risk]=1
+    if (( ENABLE_COLOR )); then
+      say "${C_RED}CRITICAL${C_RESET}: Detected vfio-pci probe/BAR errors in dmesg that match this GPU/kernel."
+    else
+      say "CRITICAL: Detected vfio-pci probe/BAR errors in dmesg that match this GPU/kernel."
+    fi
+    say "--- dmesg matches ---"
+    printf '%s\n' "$dmesg_out"
+    say "---------------------"
+    note "This strongly suggests the well-known simpledrm/sysfb regression where the kernel refuses to release the GPU BARs to vfio-pci."
+  else
+    if (( ENABLE_COLOR )); then
+      say "${C_GREEN}OK${C_RESET}: No obvious vfio-pci probe/BAR reservation errors found in dmesg."
+    else
+      say "OK: No obvious vfio-pci probe/BAR reservation errors found in dmesg."
+    fi
+  fi
+}
+
 iommu_enabled_or_die() {
   # Best-effort check that IOMMU groups exist on this boot.
   # This requires both firmware support (VT-d / AMD-Vi) and
@@ -3567,6 +3693,12 @@ detect_system() {
   # For install mode, require IOMMU to be active before continuing.
   iommu_enabled_or_die
 
+  # Early, kernel-wide VFIO risk audit. At this point we do not yet know
+  # which GPU will be the guest, so we only run the generic checks (no
+  # BDF argument). Later, after GPU selection, we run a targeted audit
+  # again for the chosen guest GPU.
+  audit_vfio_health ""
+
   say
   hdr "Environment support"
   note "Init system: systemd (required; other init systems are NOT supported by this helper)."
@@ -3875,6 +4007,21 @@ apply_configuration() {
   if [[ "${XDG_CURRENT_DESKTOP:-}" =~ KDE|Plasma|PLASMA ]]; then
     note "Desktop session: KDE Plasma detected; these settings are tuned for Plasma + Wayland + PipeWire."
   fi
+  # Targeted VFIO kernel audit for the selected guest GPU before we write
+  # any configuration. If the kernel looks hostile (CTX[kernel_vfio_risk]=1),
+  # we warn loudly and require explicit confirmation to continue.
+  say
+  audit_vfio_health "$guest_gpu"
+  if [[ "${CTX[kernel_vfio_risk]:-0}" == "1" ]]; then
+    say
+    hdr "Kernel appears hostile to VFIO (proceed with caution)"
+    note "The checks above indicate that this running kernel is likely affected by a VFIO/simpledrm regression or similar issue."
+    note "Recommended: switch to a known-good kernel (for example the distribution's long-term kernel) before relying on this configuration."
+    if ! confirm_phrase "Continuing on a hostile kernel can lead to black screens or failed passthrough even with correct settings." "I UNDERSTAND"; then
+      die "Aborted due to high-risk kernel for VFIO. Boot a safer kernel (e.g. longterm) and re-run this helper."
+    fi
+  fi
+
   say
 
   hdr "Apply changes"
