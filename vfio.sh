@@ -139,7 +139,7 @@ prompt_yn() {
 
 usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--verify] [--detect] [--self-test] [--health-check] [--health-check-previous] [--reset] [--disable-bootlog]
+Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--verify] [--detect] [--self-test] [--health-check] [--health-check-previous] [--health-check-all] [--reset] [--disable-bootlog]
 
   --debug           Enable verbose debug logging (and bash xtrace).
   --dry-run         Show actions but do not write files / run system-changing commands.
@@ -182,6 +182,9 @@ parse_args() {
         ;;
       --health-check-previous)
         MODE="health-check-prev"
+        ;;
+      --health-check-all)
+        MODE="health-check-all"
         ;;
       --reset)
         MODE="reset"
@@ -535,6 +538,63 @@ simplefb_lock_active() {
   grep -qiE '(simple-framebuffer|simpledrm|efifb|vesafb|EFI Framebuffer)' /proc/iomem 2>/dev/null
 }
 
+# Return 0 if lspci reports that Resizable BAR is enabled for this PCI
+# device. We use this as a heuristic because large BARs combined with some
+# vendor drivers/firmware combinations have been observed to cause black
+# screens or other instability when doing GPU passthrough on certain
+# consumer platforms.
+rebar_enabled_for_bdf() {
+  local bdf="$1"
+  have_cmd lspci || return 1
+  # If capabilities are not readable (for example when bound to vfio-pci),
+  # lspci prints "Capabilities: <access denied>" and we cannot reliably
+  # determine ReBAR state. In that case we return 1 ("not confirmed") and
+  # higher-level callers should avoid claiming it is disabled.
+  local out
+  out="$(lspci -s "$bdf" -vv 2>/dev/null || true)"
+  [[ -n "$out" ]] || return 1
+  if grep -q 'Capabilities: <access denied>' <<<"$out"; then
+    return 1
+  fi
+  # Look for a "Resizable BAR" capability block mentioning "Enabled" for
+  # at least one BAR on this device.
+  if printf '%s\n' "$out" | awk '/Resizable BAR/{flag=1;next} /^[^[:space:]]/{flag=0} flag{print}' | grep -qi 'Enabled'; then
+    return 0
+  fi
+  return 1
+}
+
+# Human-readable ReBAR status string for a given BDF. Unlike
+# rebar_enabled_for_bdf(), this does not try to return a boolean; instead it
+# describes what we can see from lspci in a way that is safe when the device
+# is already bound to vfio-pci and capabilities are not readable.
+rebar_status_for_bdf() {
+  local bdf="$1"
+  have_cmd lspci || { echo "unknown (lspci missing)"; return 0; }
+
+  local out
+  out="$(lspci -s "$bdf" -vv 2>/dev/null || true)"
+  [[ -n "$out" ]] || { echo "unknown (device not found)"; return 0; }
+
+  if grep -q 'Capabilities: <access denied>' <<<"$out"; then
+    echo "unknown (PCI capabilities not readable; device is likely bound to vfio-pci)"
+    return 0
+  fi
+
+  local bar_block
+  bar_block="$(printf '%s\n' "$out" | awk '/Resizable BAR/{flag=1;next} /^[^[:space:]]/{flag=0} flag{print}')"
+  if [[ -z "$bar_block" ]]; then
+    echo "not reported"
+    return 0
+  fi
+
+  if grep -qi 'Enabled' <<<"$bar_block"; then
+    echo "ENABLED"
+  else
+    echo "present but disabled"
+  fi
+}
+
 # Audit whether the *currently running* kernel looks hostile to VFIO for the
 # selected guest GPU. This is a diagnostic only; it does not change any
 # configuration. Results are summarized in CTX[kernel_vfio_risk]:
@@ -746,6 +806,53 @@ audit_vfio_health() {
     fi
     return 1
   fi
+}
+
+# Run a VFIO kernel health audit for all detected GPUs. Exit code is the
+# worst status across all devices: 0=all PASS, 1=at least one WARN, 2=at
+# least one FAIL.
+health_check_all() {
+  hdr "VFIO Kernel Health Audit (all GPUs)"
+
+  local -a gpu_bdfs=()
+  local gpu_bdf gpu_desc vendor_id device_id audio_csv audio_descs
+  while IFS=$'\t' read -r gpu_bdf gpu_desc vendor_id device_id audio_csv audio_descs; do
+    [[ -n "${gpu_bdf:-}" ]] || continue
+    gpu_bdfs+=("$gpu_bdf")
+  done < <(gpu_discover_all_sysfs)
+
+  if (( ${#gpu_bdfs[@]} == 0 )); then
+    say "No GPUs found via sysfs; nothing to audit."
+    return 1
+  fi
+
+  local worst=0 ec
+  for gpu_bdf in "${gpu_bdfs[@]}"; do
+    say
+    say "=== GPU ${gpu_bdf} ==="
+    if audit_vfio_health "$gpu_bdf"; then
+      ec=0
+    else
+      ec=$?
+    fi
+    if (( ec > worst )); then
+      worst=$ec
+    fi
+  done
+
+  say
+  case "$worst" in
+    0)
+      say "Overall health (all GPUs): PASS"
+      ;;
+    1)
+      say "Overall health (all GPUs): WARN (at least one GPU reported VFIO risk markers)"
+      ;;
+    2)
+      say "Overall health (all GPUs): FAIL (at least one GPU reported vfio-pci errors in logs)"
+      ;;
+  esac
+  return "$worst"
 }
 
 iommu_enabled_or_die() {
@@ -1012,6 +1119,15 @@ detect_existing_vfio_report() {
     print_kv "Configured guest GPU" "${GUEST_GPU_BDF:-<unset>}"
     print_kv "Configured host audio" "${HOST_AUDIO_BDFS_CSV:-<unset>}"
     print_kv "Configured guest audio" "${GUEST_AUDIO_BDFS_CSV:-<unset>}"
+    if [[ -n "${GUEST_GPU_BDF:-}" ]]; then
+      local rebar_state
+      rebar_state="$(rebar_status_for_bdf "$GUEST_GPU_BDF")"
+      if (( ENABLE_COLOR )); then
+        print_kv "Guest GPU ReBAR" "${C_BLUE}${rebar_state}${C_RESET}"
+      else
+        print_kv "Guest GPU ReBAR" "$rebar_state"
+      fi
+    fi
   else
     if (( ENABLE_COLOR )); then
       print_kv "Config" "${C_RED}$CONF_FILE (missing)${C_RESET}"
@@ -3291,6 +3407,20 @@ verify_setup() {
     fi
   fi
 
+  # Resizable BAR status for the configured guest GPU (informational only).
+  if [[ -n "${GUEST_GPU_BDF:-}" ]]; then
+    say
+    hdr "Resizable BAR status (guest GPU)"
+    local rebar_state
+    rebar_state="$(rebar_status_for_bdf "$GUEST_GPU_BDF")"
+    if (( ENABLE_COLOR )); then
+      say "${C_BLUE}INFO${C_RESET}: ReBAR status for $GUEST_GPU_BDF: ${C_BOLD}${rebar_state}${C_RESET}"
+    else
+      say "INFO: ReBAR status for $GUEST_GPU_BDF: ${rebar_state}"
+    fi
+    note "On some platforms enabling ReBAR fixes black screens; on others it can cause them. If you hit display issues in the guest, experiment toggling this in firmware."
+  fi
+
   # On openSUSE/BLS, also check the CURRENT Boot Loader Spec entry that
   # was used to boot this kernel, so you know whether that exact entry
   # has the expected VFIO/IOMMU flags.
@@ -3896,6 +4026,22 @@ user_selection() {
   CTX[host_gpu]="${gpu_bdfs[$host_idx]}"
   CTX[guest_vendor]="${gpu_vendor_ids[$guest_idx]}"
 
+  # Resizable BAR status for the selected guest GPU. This is informational
+  # but we make it explicit because on some platforms ReBAR being enabled
+  # or disabled can be the difference between a black screen and a working
+  # guest. The behavior is hardware/firmware specific, so we do NOT force
+  # any particular state here.
+  if rebar_enabled_for_bdf "${CTX[guest_gpu]}"; then
+    say
+    hdr "Resizable BAR (ReBAR) detected for guest GPU"
+    note "lspci reports Resizable BAR as ENABLED for the selected guest GPU (${CTX[guest_gpu]})."
+    note "Depending on motherboard firmware and GPU drivers, ReBAR can either help or hurt passthrough stability (black screens, missing OVMF logo, or smoother performance)."
+    note "If you later see black screens or no firmware logo in the guest, one of the first things to try is toggling ReBAR for this GPU in BIOS/UEFI (ON vs OFF) and retesting."
+    if ! confirm_phrase "I understand that ReBAR being enabled is a hardware/firmware-specific factor and I may need to experiment with it if problems appear." "I UNDERSTAND"; then
+      die "Aborted at user request while acknowledging ReBAR status for the guest GPU."
+    fi
+  fi
+
   # Track the exact vendor:device ID for the selected guest GPU so we can
   # expose a matching vfio-pci.ids= parameter in the kernel cmdline. This
   # makes sure vfio-pci claims the card as early as possible (initramfs),
@@ -4497,7 +4643,7 @@ main() {
   # kernel modules / bindings. Self-test, detect and health-check
   # variants should be able to run in "thin" environments (containers,
   # chroots) where modprobe may be absent.
-  if [[ "$MODE" != "self-test" && "$MODE" != "detect" && "$MODE" != "health-check" && "$MODE" != "health-check-prev" ]]; then
+  if [[ "$MODE" != "self-test" && "$MODE" != "detect" && "$MODE" != "health-check" && "$MODE" != "health-check-prev" && "$MODE" != "health-check-all" ]]; then
     need_cmd modprobe
   fi
 
@@ -4551,6 +4697,11 @@ main() {
     else
       audit_vfio_health ""
     fi
+    exit $?
+  fi
+
+  if [[ "$MODE" == "health-check-all" ]]; then
+    health_check_all
     exit $?
   fi
 

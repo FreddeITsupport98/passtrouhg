@@ -129,7 +129,7 @@ Use `sudo` so that the script can write to `/etc`, `/usr/local`, systemd directo
 The script supports several modes controlled by flags. By default, without any flag, it runs the **interactive installer**.
 
 ```text
-./vfio.sh [--debug] [--dry-run] [--verify] [--detect] [--self-test] [--health-check] [--health-check-previous] [--reset] [--disable-bootlog]
+./vfio.sh [--debug] [--dry-run] [--verify] [--detect] [--self-test] [--health-check] [--health-check-previous] [--health-check-all] [--reset] [--disable-bootlog]
 ```
 
 ### Common flags
@@ -160,6 +160,14 @@ The script supports several modes controlled by flags. By default, without any f
 - `--health-check-previous`
   - Same as `--health-check`, but inspects the **previous boot’s kernel logs** (`journalctl -k -b -1`) when available.
   - Useful when a bad kernel just failed or black-screened and you have since rebooted into a safe kernel.
+
+- `--health-check-all`
+  - Runs the VFIO kernel health audit against **all detected GPUs** instead of just the configured guest GPU.
+  - For each GPU BDF it prints the same PASS/WARN/FAIL grading as `--health-check`.
+  - Exit code reflects the worst result across all GPUs:
+    - 0 – all GPUs reported PASS.
+    - 1 – at least one GPU reported WARN, none reported FAIL.
+    - 2 – at least one GPU reported FAIL (vfio-pci errors in logs for some device).
 
 - `--verify`
   - Does **not** change anything.
@@ -436,6 +444,12 @@ The script enforces:
 
 For the chosen guest GPU, any audio functions in the **same PCI slot** are treated as candidate **HDMI/DP audio devices**.
 
+The wizard also checks whether **Resizable BAR (ReBAR)** appears enabled for the selected guest GPU (via `lspci -vv`):
+
+- This is reported as **informational**, not as an error.
+- Some platforms require ReBAR **enabled** for stable passthrough, others work best with it **disabled**.
+- The script makes you acknowledge that ReBAR is a hardware/firmware-specific factor you may need to experiment with if you hit black screens or missing OVMF logos.
+
 You are shown which audio PCI functions are tied to the guest GPU and asked:
 
 - Whether to also passthrough those audio functions.
@@ -618,6 +632,7 @@ Use this when you want to audit:
 - How current kernel cmdline and bootloader look.
 - Where VFIO shows up in initramfs and modprobe configs.
 - What drivers are currently bound to which GPU/audio devices.
+- The **Resizable BAR status** of the configured guest GPU (shown as INFO; the script does not force ReBAR on or off, it only surfaces its state so you know what you are testing).
 
 ### Resetting everything: `--reset`
 
