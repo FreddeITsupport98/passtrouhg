@@ -139,7 +139,7 @@ prompt_yn() {
 
 usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--verify] [--detect] [--self-test] [--health-check] [--reset] [--disable-bootlog]
+Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--verify] [--detect] [--self-test] [--health-check] [--health-check-previous] [--reset] [--disable-bootlog]
 
   --debug           Enable verbose debug logging (and bash xtrace).
   --dry-run         Show actions but do not write files / run system-changing commands.
@@ -148,6 +148,8 @@ Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--verify] [--detect] [--se
   --detect          Print a detailed report of existing VFIO/passthrough configuration and exit.
   --self-test       Run automated checks for common issues (awk compatibility, PipeWire access) and exit.
   --health-check    Audit the running kernel and logs for VFIO-friendliness (no changes made) and exit.
+  --health-check-previous
+                     Audit the PREVIOUS boot's kernel logs for VFIO-friendliness (no changes made) and exit.
   --reset           Reset/remove VFIO passthrough settings installed by this script (systemd/modprobe/grub/initramfs/user units).
   --disable-bootlog Disable only the optional VFIO boot log dumper service/unit, keeping the rest of the VFIO setup intact.
 EOF
@@ -177,6 +179,9 @@ parse_args() {
         ;;
       --health-check)
         MODE="health-check"
+        ;;
+      --health-check-previous)
+        MODE="health-check-prev"
         ;;
       --reset)
         MODE="reset"
@@ -661,7 +666,16 @@ audit_vfio_health() {
 
   local log_data
   if have_cmd journalctl; then
-    log_data="$(journalctl -k -b --no-pager 2>/dev/null || true)"
+    # Allow callers to choose which boot to inspect via VFIO_HEALTH_BOOT_OFFSET.
+    #  0 or unset: current boot (-b)
+    # -1: previous boot (-b -1)
+    local boot_opt="-b"
+    if [[ -n "${VFIO_HEALTH_BOOT_OFFSET:-}" ]]; then
+      if [[ "${VFIO_HEALTH_BOOT_OFFSET}" =~ ^-?[0-9]+$ && "${VFIO_HEALTH_BOOT_OFFSET}" != "0" ]]; then
+        boot_opt="-b${VFIO_HEALTH_BOOT_OFFSET}"
+      fi
+    fi
+    log_data="$(journalctl -k ${boot_opt} --no-pager 2>/dev/null || true)"
   else
     if ! have_cmd dmesg; then
       say "No journalctl or dmesg command available; skipping log-based checks."
@@ -4474,9 +4488,9 @@ main() {
 
   # modprobe is only required for modes that actually manipulate
   # kernel modules / bindings. Self-test, detect and health-check
-  # should be able to run in "thin" environments (containers,
+  # variants should be able to run in "thin" environments (containers,
   # chroots) where modprobe may be absent.
-  if [[ "$MODE" != "self-test" && "$MODE" != "detect" && "$MODE" != "health-check" ]]; then
+  if [[ "$MODE" != "self-test" && "$MODE" != "detect" && "$MODE" != "health-check" && "$MODE" != "health-check-prev" ]]; then
     need_cmd modprobe
   fi
 
@@ -4512,7 +4526,25 @@ main() {
     else
       audit_vfio_health ""
     fi
-    exit 0
+    exit $?
+  fi
+
+  if [[ "$MODE" == "health-check-prev" ]]; then
+    # Same as --health-check but using the PREVIOUS boot's kernel logs
+    # (journalctl -k -b -1) when available.
+    local guest_bdf=""
+    if readable_file "$CONF_FILE"; then
+      # shellcheck disable=SC1090
+      . "$CONF_FILE"
+      guest_bdf="${GUEST_GPU_BDF:-}"
+    fi
+    VFIO_HEALTH_BOOT_OFFSET=-1
+    if [[ -n "$guest_bdf" ]]; then
+      audit_vfio_health "$guest_bdf"
+    else
+      audit_vfio_health ""
+    fi
+    exit $?
   fi
 
   if [[ "$MODE" == "reset" ]]; then
