@@ -129,7 +129,7 @@ Use `sudo` so that the script can write to `/etc`, `/usr/local`, systemd directo
 The script supports several modes controlled by flags. By default, without any flag, it runs the **interactive installer**.
 
 ```text
-./vfio.sh [--debug] [--dry-run] [--verify] [--detect] [--self-test] [--reset] [--disable-bootlog]
+./vfio.sh [--debug] [--dry-run] [--verify] [--detect] [--self-test] [--health-check] [--health-check-previous] [--reset] [--disable-bootlog]
 ```
 
 ### Common flags
@@ -144,6 +144,22 @@ The script supports several modes controlled by flags. By default, without any f
   - Automatically implied by `--verify`, `--detect`, and `--self-test`.
 
 ### Operational modes
+
+- `--health-check`
+  - Audits the **currently running kernel and boot** for VFIO-friendliness.
+  - Checks:
+    - Kernel version (flags 6.13+ as high-risk for known VFIO/simpledrm regressions).
+    - IOMMU groups and `vfio-pci` module availability.
+    - Optional framebuffer locks (simpledrm/sysfb/efifb/vesafb) via `/proc/iomem`.
+    - Kernel logs (via `journalctl -k -b` or `dmesg`) for vfio-pci BAR/probe errors.
+  - Produces a single summary line and exit code:
+    - `HEALTH: PASS` (exit 0) – no obvious VFIO-hostile markers.
+    - `HEALTH: WARN` (exit 1) – one or more risk markers but no hard vfio-pci errors.
+    - `HEALTH: FAIL` (exit 2) – vfio-pci BAR/probe errors detected in logs.
+
+- `--health-check-previous`
+  - Same as `--health-check`, but inspects the **previous boot’s kernel logs** (`journalctl -k -b -1`) when available.
+  - Useful when a bad kernel just failed or black-screened and you have since rebooted into a safe kernel.
 
 - `--verify`
   - Does **not** change anything.
