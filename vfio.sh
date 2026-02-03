@@ -139,7 +139,7 @@ prompt_yn() {
 
 usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--verify] [--detect] [--self-test] [--reset] [--disable-bootlog]
+Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--verify] [--detect] [--self-test] [--health-check] [--reset] [--disable-bootlog]
 
   --debug           Enable verbose debug logging (and bash xtrace).
   --dry-run         Show actions but do not write files / run system-changing commands.
@@ -147,6 +147,7 @@ Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--verify] [--detect] [--se
   --verify          Do not change anything; validate an existing setup (reads $CONF_FILE).
   --detect          Print a detailed report of existing VFIO/passthrough configuration and exit.
   --self-test       Run automated checks for common issues (awk compatibility, PipeWire access) and exit.
+  --health-check    Audit the running kernel and logs for VFIO-friendliness (no changes made) and exit.
   --reset           Reset/remove VFIO passthrough settings installed by this script (systemd/modprobe/grub/initramfs/user units).
   --disable-bootlog Disable only the optional VFIO boot log dumper service/unit, keeping the rest of the VFIO setup intact.
 EOF
@@ -173,6 +174,9 @@ parse_args() {
         ;;
       --self-test)
         MODE="self-test"
+        ;;
+      --health-check)
+        MODE="health-check"
         ;;
       --reset)
         MODE="reset"
@@ -4383,10 +4387,10 @@ main() {
   need_cmd stat
 
   # modprobe is only required for modes that actually manipulate
-  # kernel modules / bindings. Self-test and detect should be able
-  # to run in "thin" environments (containers, chroots) where
-  # modprobe may be absent.
-  if [[ "$MODE" != "self-test" && "$MODE" != "detect" ]]; then
+  # kernel modules / bindings. Self-test, detect and health-check
+  # should be able to run in "thin" environments (containers,
+  # chroots) where modprobe may be absent.
+  if [[ "$MODE" != "self-test" && "$MODE" != "detect" && "$MODE" != "health-check" ]]; then
     need_cmd modprobe
   fi
 
@@ -4406,6 +4410,23 @@ main() {
   if [[ "$MODE" == "self-test" ]]; then
     self_test
     exit $?
+  fi
+
+  if [[ "$MODE" == "health-check" ]]; then
+    # If a config exists, prefer to audit the configured guest GPU; otherwise
+    # fall back to a generic audit.
+    local guest_bdf=""
+    if readable_file "$CONF_FILE"; then
+      # shellcheck disable=SC1090
+      . "$CONF_FILE"
+      guest_bdf="${GUEST_GPU_BDF:-}"
+    fi
+    if [[ -n "$guest_bdf" ]]; then
+      audit_vfio_health "$guest_bdf"
+    else
+      audit_vfio_health ""
+    fi
+    exit 0
   fi
 
   if [[ "$MODE" == "reset" ]]; then
