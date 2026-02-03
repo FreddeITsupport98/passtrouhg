@@ -3801,7 +3801,11 @@ detect_system() {
   # which GPU will be the guest, so we only run the generic checks (no
   # BDF argument). Later, after GPU selection, we run a targeted audit
   # again for the chosen guest GPU.
-  audit_vfio_health ""
+  #
+  # IMPORTANT: audit_vfio_health returns non-zero for WARN/FAIL, but we
+  # treat this as informational here. The hard gate happens later in
+  # apply_configuration().
+  audit_vfio_health "" || true
 
   say
   hdr "Environment support"
@@ -4114,8 +4118,11 @@ apply_configuration() {
   # Targeted VFIO kernel audit for the selected guest GPU before we write
   # any configuration. If the kernel looks hostile (CTX[kernel_vfio_risk]=1),
   # we warn loudly and require explicit confirmation to continue.
+  #
+  # IMPORTANT: ignore the function's exit status here so that set -e does
+  # not abort before we can show the warning and ask for confirmation.
   say
-  audit_vfio_health "$guest_gpu"
+  audit_vfio_health "$guest_gpu" || true
   if [[ "${CTX[kernel_vfio_risk]:-0}" == "1" ]]; then
     say
     hdr "Kernel appears hostile to VFIO (proceed with caution)"
