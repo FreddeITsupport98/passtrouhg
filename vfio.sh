@@ -3064,27 +3064,41 @@ verify_setup() {
   # On openSUSE/BLS, also check the CURRENT Boot Loader Spec entry that
   # was used to boot this kernel, so you know whether that exact entry
   # has the expected VFIO/IOMMU flags.
+  #
+  # IMPORTANT: some users boot non-standard kernels (for example Liquorix)
+  # from the same root/subvolume as the distribution kernels. In that
+  # case multiple BLS entries can share the same root= and rootflags=
+  # values. To avoid falsely reporting the wrong entry, we also require
+  # that the BLS file references the *running* kernel version string
+  # (uname -r), similar to the logic used in systemd_boot_add_kernel_params().
   if is_opensuse_like && command -v sdbootutil >/dev/null 2>&1; then
     say
     say "-- Current BLS entry (openSUSE) --"
-    local running_cmdline bls_dir entry opts
+    local running_cmdline bls_dir entry opts running_kernel
     running_cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
     bls_dir="$(systemd_boot_entries_dir 2>/dev/null || true)"
-    if [[ -n "$bls_dir" && -n "$running_cmdline" ]]; then
+    running_kernel="$(uname -r)"
+    if [[ -n "$bls_dir" && -n "$running_cmdline" && -n "$running_kernel" ]]; then
       local running_root running_rootflags
       running_root="$(sed -n 's/.*\<root=\([^ ]*\).*/\1/p' <<<"$running_cmdline")"
       running_rootflags="$(sed -nE 's/.*rootflags="?([^ "]+)"?.*/\1/p' <<<"$running_cmdline")"
       if [[ -n "$running_root" && -n "$running_rootflags" ]]; then
-        local f
+        local f matched=0
         shopt -s nullglob
         for f in "$bls_dir"/*.conf; do
           opts="$(grep -m1 -E '^options[[:space:]]+' "$f" 2>/dev/null | sed -E 's/^options[[:space:]]+//')"
           opts="$(trim "${opts:-}")"
           [[ -n "$opts" ]] || continue
+          # Only consider entries whose file content mentions the running
+          # kernel version (usually on the linux / initrd lines).
+          if ! grep -Fq "$running_kernel" "$f" 2>/dev/null; then
+            continue
+          fi
           local eroot eflags
           eroot="$(sed -n 's/.*\<root=\([^ ]*\).*/\1/p' <<<"$opts")"
           eflags="$(sed -nE 's/.*rootflags="?([^ "]+)"?.*/\1/p' <<<"$opts")"
           if [[ -n "$eroot" && -n "$eflags" && "$eroot" == "$running_root" && "$eflags" == "$running_rootflags" ]]; then
+            matched=1
             say "BLS entry: $(basename "$f")"
             if grep -qwE 'amd_iommu=on|intel_iommu=on' <<<"$opts" && \
                grep -qw "iommu=pt" <<<"$opts" && \
@@ -3106,6 +3120,10 @@ verify_setup() {
           fi
         done
         shopt -u nullglob
+        if (( ! matched )); then
+          say "No BLS entry exactly matching the running kernel ($running_kernel) and root/subvolume was found."
+          say "This is normal if you booted a custom kernel (for example Liquorix) via a separate entry outside the standard system-* BLS files."
+        fi
       fi
     fi
   fi
