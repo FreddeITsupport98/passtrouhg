@@ -591,7 +591,10 @@ rebar_status_for_bdf() {
   if grep -qi 'Enabled' <<<"$bar_block"; then
     echo "ENABLED"
   else
-    echo "present but disabled"
+    # We can see a Resizable BAR capability block but no BAR marked
+    # as "Enabled". All we can state with certainty is what lspci
+    # shows for this device.
+    echo "present (lspci does not show any BAR as Enabled for this device)"
   fi
 }
 

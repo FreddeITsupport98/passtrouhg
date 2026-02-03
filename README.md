@@ -632,7 +632,7 @@ Use this when you want to audit:
 - How current kernel cmdline and bootloader look.
 - Where VFIO shows up in initramfs and modprobe configs.
 - What drivers are currently bound to which GPU/audio devices.
-- The **Resizable BAR status** of the configured guest GPU (shown as INFO; the script does not force ReBAR on or off, it only surfaces its state so you know what you are testing).
+- The **Resizable BAR status** of the configured guest GPU (shown as INFO, based on `lspci -vv` output; the script does not force ReBAR on or off and only reports what the kernel advertises).
 
 ### Resetting everything: `--reset`
 
