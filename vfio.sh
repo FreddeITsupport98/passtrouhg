@@ -538,6 +538,49 @@ simplefb_lock_active() {
   grep -qiE '(simple-framebuffer|simpledrm|efifb|vesafb|EFI Framebuffer)' /proc/iomem 2>/dev/null
 }
 
+# Return 0 if we detect that the GPU's BARs are mapped above the 4G
+# boundary. This is a strong indication that "Above 4G Decoding" (a.k.a.
+# 64-bit BAR support / Large BAR) is effectively active for this device.
+#
+# We consider Above 4G Decoding to be effectively enabled when at least
+# one Memory BAR for the device has an address whose hex representation
+# is longer than 8 characters (i.e. above 0xFFFFFFFF).
+above_4g_decoding_enabled_for_bdf() {
+  local bdf="$1"
+  have_cmd lspci || return 1
+
+  # Use -v (not -vv) to keep output smaller; region lines are the same.
+  local line addr raw
+  while read -r line; do
+    # Typical line: "Region 0: Memory at 380000000000 (64-bit, prefetchable)"
+    if [[ "$line" == *"Memory at"* ]]; then
+      # Third field is the hex address right after "Memory" and "at".
+      raw="$(awk '{print $3}' <<<"$line")"
+      # Strip anything after an opening parenthesis, just in case.
+      addr="${raw%%(*}"
+      # Strip any 0x prefix if present (some lspci builds may add it).
+      addr="${addr#0x}"
+      # If the hex string is longer than 8 characters, it's above 4G.
+      if [[ ${#addr} -gt 8 ]]; then
+        return 0
+      fi
+    fi
+  done < <(lspci -v -s "$bdf" 2>/dev/null || true)
+
+  return 1
+}
+
+# Human-readable Above 4G Decoding status string for a given BDF.
+above_4g_decoding_status_for_bdf() {
+  local bdf="$1"
+  have_cmd lspci || { echo "unknown (lspci missing)"; return 0; }
+  if above_4g_decoding_enabled_for_bdf "$bdf"; then
+    echo "ENABLED (GPU BARs mapped above 4GB)"
+  else
+    echo "DISABLED or not used (all GPU BARs fit under 4GB)"
+  fi
+}
+
 # Return 0 if lspci reports that Resizable BAR is enabled for this PCI
 # device. We use this as a heuristic because large BARs combined with some
 # vendor drivers/firmware combinations have been observed to cause black
@@ -1155,12 +1198,15 @@ detect_existing_vfio_report() {
     print_kv "Configured host audio" "${HOST_AUDIO_BDFS_CSV:-<unset>}"
     print_kv "Configured guest audio" "${GUEST_AUDIO_BDFS_CSV:-<unset>}"
     if [[ -n "${GUEST_GPU_BDF:-}" ]]; then
-      local rebar_state
+      local rebar_state above4g_state
       rebar_state="$(rebar_status_for_bdf "$GUEST_GPU_BDF")"
+      above4g_state="$(above_4g_decoding_status_for_bdf "$GUEST_GPU_BDF")"
       if (( ENABLE_COLOR )); then
         print_kv "Guest GPU ReBAR" "${C_BLUE}${rebar_state}${C_RESET}"
+        print_kv "Guest GPU Above 4G" "${C_BLUE}${above4g_state}${C_RESET}"
       else
         print_kv "Guest GPU ReBAR" "$rebar_state"
+        print_kv "Guest GPU Above 4G" "$above4g_state"
       fi
     fi
   else
@@ -3442,18 +3488,21 @@ verify_setup() {
     fi
   fi
 
-  # Resizable BAR status for the configured guest GPU (informational only).
+  # Resizable BAR + Above 4G status for the configured guest GPU (informational only).
   if [[ -n "${GUEST_GPU_BDF:-}" ]]; then
     say
-    hdr "Resizable BAR status (guest GPU)"
-    local rebar_state
+    hdr "GPU BAR layout (guest GPU)"
+    local rebar_state above4g_state
     rebar_state="$(rebar_status_for_bdf "$GUEST_GPU_BDF")"
+    above4g_state="$(above_4g_decoding_status_for_bdf "$GUEST_GPU_BDF")"
     if (( ENABLE_COLOR )); then
       say "${C_BLUE}INFO${C_RESET}: ReBAR status for $GUEST_GPU_BDF: ${C_BOLD}${rebar_state}${C_RESET}"
+      say "${C_BLUE}INFO${C_RESET}: Above 4G Decoding (64-bit BAR) for $GUEST_GPU_BDF: ${C_BOLD}${above4g_state}${C_RESET}"
     else
       say "INFO: ReBAR status for $GUEST_GPU_BDF: ${rebar_state}"
+      say "INFO: Above 4G Decoding (64-bit BAR) for $GUEST_GPU_BDF: ${above4g_state}"
     fi
-    note "On some platforms enabling ReBAR fixes black screens; on others it can cause them. If you hit display issues in the guest, experiment toggling this in firmware."
+    note "For passthrough, Above 4G Decoding / 64-bit BAR support should typically be ENABLED so large BARs can be mapped into the guest. ReBAR on top is optional and may need to be toggled depending on your platform."
   fi
 
   # On openSUSE/BLS, also check the CURRENT Boot Loader Spec entry that
@@ -4052,13 +4101,21 @@ user_selection() {
   # or disabled can be the difference between a black screen and a working
   # guest. The behavior is hardware/firmware specific, so we do NOT force
   # any particular state here.
+  #
+  # IMPORTANT: For GPU passthrough the **mandatory** BIOS setting is usually
+  # "Above 4G Decoding" / "64-bit BAR support" being enabled, so that large
+  # PCI BARs can be mapped into the guest address space. ReBAR on top of
+  # that is optional/experimental: on some machines it must be ON, on
+  # others it must be OFF to avoid black screens once the vendor driver
+  # loads inside the VM.
   if rebar_enabled_for_bdf "${CTX[guest_gpu]}"; then
     say
     hdr "Resizable BAR (ReBAR) detected for guest GPU"
     note "lspci reports Resizable BAR as ENABLED for the selected guest GPU (${CTX[guest_gpu]})."
-    note "Depending on motherboard firmware and GPU drivers, ReBAR can either help or hurt passthrough stability (black screens, missing OVMF logo, or smoother performance)."
-    note "If you later see black screens or no firmware logo in the guest, one of the first things to try is toggling ReBAR for this GPU in BIOS/UEFI (ON vs OFF) and retesting."
-    if ! confirm_phrase "I understand that ReBAR being enabled is a hardware/firmware-specific factor and I may need to experiment with it if problems appear." "I UNDERSTAND"; then
+    note "Make sure your BIOS has 'Above 4G Decoding' (sometimes called 'Large BAR' or '64-bit BAR') ENABLED for GPU passthrough; that is the requirement for mapping big BARs into the VM."
+    note "ReBAR itself is hardware/firmware specific: on some platforms enabling it fixes black screens, on others you must disable it for the VM to stay stable once the AMD/NVIDIA driver loads."
+    note "If you later see black screens or no firmware logo in the guest, one of the first things to try is toggling ReBAR for this GPU in BIOS/UEFI (ON vs OFF) and retesting, with Above 4G Decoding kept enabled."
+    if ! confirm_phrase "I understand that ReBAR is optional/experimental and I may need to experiment with it if problems appear." "I UNDERSTAND"; then
       die "Aborted at user request while acknowledging ReBAR status for the guest GPU."
     fi
   fi
@@ -4649,6 +4706,13 @@ apply_configuration() {
 }
 
 main() {
+  # Ensure this helper is marked executable so it can be run as ./vfio.sh
+  # even if the user originally invoked it via "sh vfio.sh" or similar.
+  # Best-effort only: ignore failures (read-only filesystem, etc.).
+  if [[ -f "$0" && ! -x "$0" ]]; then
+    chmod +x "$0" 2>/dev/null || true
+  fi
+
   parse_args "$@"
 
   # Core tools used across modes

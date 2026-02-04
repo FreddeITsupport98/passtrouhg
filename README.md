@@ -447,8 +447,9 @@ For the chosen guest GPU, any audio functions in the **same PCI slot** are treat
 The wizard also checks whether **Resizable BAR (ReBAR)** appears enabled for the selected guest GPU (via `lspci -vv`):
 
 - This is reported as **informational**, not as an error.
-- Some platforms require ReBAR **enabled** for stable passthrough, others work best with it **disabled**.
-- The script makes you acknowledge that ReBAR is a hardware/firmware-specific factor you may need to experiment with if you hit black screens or missing OVMF logos.
+- For GPU passthrough, the critical BIOS setting is usually **Above 4G Decoding / 64-bit BAR support** being enabled so that large PCI BARs can be mapped into the guest.
+- ReBAR on top of that is **optional/experimental**: some hardware/firmware combos require it **enabled**, others are only stable with it **disabled**.
+- The script makes you acknowledge that ReBAR is a hardware/firmware-specific factor you may need to experiment with if you hit black screens or missing OVMF logos (while keeping Above 4G Decoding enabled).
 
 You are shown which audio PCI functions are tied to the guest GPU and asked:
 
@@ -632,7 +633,7 @@ Use this when you want to audit:
 - How current kernel cmdline and bootloader look.
 - Where VFIO shows up in initramfs and modprobe configs.
 - What drivers are currently bound to which GPU/audio devices.
-- The **Resizable BAR status** of the configured guest GPU (shown as INFO, based on `lspci -vv` output; the script does not force ReBAR on or off and only reports what the kernel advertises).
+- The **Resizable BAR status** of the configured guest GPU (shown as INFO, based on `lspci -vv` output; the script does not force ReBAR on or off and only reports what the kernel advertises). You should ensure **Above 4G Decoding / 64-bit BAR support** is enabled in BIOS for GPU passthrough; ReBAR itself is optional and may need to be toggled depending on your platform.
 
 ### Resetting everything: `--reset`
 
