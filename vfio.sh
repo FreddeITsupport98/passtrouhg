@@ -616,32 +616,18 @@ audit_vfio_health() {
 
   CTX[kernel_vfio_risk]=0
   CTX[kernel_vfio_log_error]=0
+  CTX[kernel_vfio_env_ok]=1
 
-  # 1) Kernel version heuristic: 6.13+ is considered high risk unless the
-  # distribution has explicitly backported a fix.
-  local kver major minor
+  # 1) Kernel version is now treated as informational only. Static
+  # version-based "high risk" heuristics (for example ">= 6.13 is bad")
+  # are fragile once distributions ship fixes. Real regression detection
+  # is handled via the log-based checks further below.
+  local kver
   kver="$(uname -r 2>/dev/null || echo unknown)"
-  major="${kver%%.*}"
-  minor="${kver#*.}"
-  minor="${minor%%.*}"
-
-  if [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]]; then
-    if (( major > 6 || (major == 6 && minor >= 13) )); then
-      if (( ENABLE_COLOR )); then
-        say "${C_YELLOW}WARN${C_RESET}: Running kernel $kver is in the high-risk range for known VFIO/simpledrm regressions (>= 6.13)."
-      else
-        say "WARN: Running kernel $kver is in the high-risk range for known VFIO/simpledrm regressions (>= 6.13)."
-      fi
-      CTX[kernel_vfio_risk]=1
-    else
-      if (( ENABLE_COLOR )); then
-        say "${C_GREEN}OK${C_RESET}: Running kernel $kver is in the generally safe range for VFIO (< 6.13)."
-      else
-        say "OK: Running kernel $kver is in the generally safe range for VFIO (< 6.13)."
-      fi
-    fi
+  if (( ENABLE_COLOR )); then
+    say "${C_GREEN}INFO${C_RESET}: Running kernel: $kver"
   else
-    say "Kernel version parse ambiguous: $kver (skipping version-based risk heuristic)."
+    say "INFO: Running kernel: $kver"
   fi
 
   # 2) Check IOMMU and VFIO module availability.
@@ -652,6 +638,7 @@ audit_vfio_health() {
     say "OK: IOMMU groups directory present."
   else
     CTX[kernel_vfio_risk]=1
+    CTX[kernel_vfio_env_ok]=0
     say "WARN: /sys/kernel/iommu_groups missing or empty (IOMMU may be disabled in BIOS or kernel cmdline)."
   fi
 
@@ -659,6 +646,7 @@ audit_vfio_health() {
     say "OK: vfio-pci module is available for this kernel."
   else
     CTX[kernel_vfio_risk]=1
+    CTX[kernel_vfio_env_ok]=0
     say "WARN: vfio-pci module not found by modinfo; VFIO GPU binding cannot work on this kernel."
   fi
 
@@ -710,6 +698,7 @@ audit_vfio_health() {
   say "Checking for active system framebuffers (simpledrm/sysfb/efifb/vesafb) ..."
   if simplefb_lock_active; then
     CTX[kernel_vfio_risk]=1
+    CTX[kernel_vfio_env_ok]=0
     if (( ENABLE_COLOR )); then
       say "${C_YELLOW}WARN${C_RESET}: A system framebuffer (simpledrm/sysfb/efifb/vesafb) is active in /proc/iomem."
     else
@@ -757,7 +746,13 @@ audit_vfio_health() {
   fi
 
   if [[ -n "$log_data" ]]; then
-    dmesg_out="$(printf '%s\n' "$log_data" | grep -i "vfio-pci" | grep -E "failed|error|probe|can't reserve|cannot reserve|BAR" | grep -i "$dmesg_filter" || true)"
+    # Filter for vfio-pci messages that are strongly indicative of BAR or
+    # probe failures for this device. We intentionally avoid generic
+    # "error" matches here to reduce false positives across distros.
+    dmesg_out="$(printf '%s\n' "$log_data" \
+      | grep -i "vfio-pci" \
+      | grep -Ei "(BAR|cannot reserve|can't reserve|probe|failed to (enable|assign))" \
+      | grep -i "$dmesg_filter" || true)"
   else
     dmesg_out=""
   fi
@@ -785,33 +780,64 @@ audit_vfio_health() {
   # 6) Final summary + exit code grading for --health-check.
   local risk="${CTX[kernel_vfio_risk]:-0}"
   local log_bad="${CTX[kernel_vfio_log_error]:-0}"
+  local env_ok="${CTX[kernel_vfio_env_ok]:-1}"
 
   say
   if (( risk == 0 )); then
     if (( ENABLE_COLOR )); then
       say "${C_GREEN}✔ HEALTH: PASS${C_RESET} (no obvious VFIO-hostile markers detected)"
       say "${C_GREEN}Kernel regression (known VFIO/simpledrm issue): NO${C_RESET}"
+      if (( env_ok == 1 )); then
+        say "${C_GREEN}VFIO environment OK (IOMMU, vfio-pci, no framebuffer lock): YES${C_RESET}"
+      else
+        say "${C_YELLOW}VFIO environment OK (IOMMU, vfio-pci, no framebuffer lock): NO${C_RESET}"
+      fi
     else
       say "HEALTH: PASS (no obvious VFIO-hostile markers detected)"
       say "Kernel regression (known VFIO/simpledrm issue): NO"
+      if (( env_ok == 1 )); then
+        say "VFIO environment OK (IOMMU, vfio-pci, no framebuffer lock): YES"
+      else
+        say "VFIO environment OK (IOMMU, vfio-pci, no framebuffer lock): NO"
+      fi
     fi
     return 0
   elif (( log_bad == 1 )); then
     if (( ENABLE_COLOR )); then
       say "${C_RED}✖ HEALTH: FAIL${C_RESET} (vfio-pci probe/BAR errors seen in logs)"
       say "${C_RED}Kernel regression (known VFIO/simpledrm issue): YES${C_RESET}"
+      if (( env_ok == 1 )); then
+        say "${C_GREEN}VFIO environment OK (IOMMU, vfio-pci, no framebuffer lock): YES${C_RESET}"
+      else
+        say "${C_YELLOW}VFIO environment OK (IOMMU, vfio-pci, no framebuffer lock): NO${C_RESET}"
+      fi
     else
       say "HEALTH: FAIL (vfio-pci probe/BAR errors seen in logs)"
       say "Kernel regression (known VFIO/simpledrm issue): YES"
+      if (( env_ok == 1 )); then
+        say "VFIO environment OK (IOMMU, vfio-pci, no framebuffer lock): YES"
+      else
+        say "VFIO environment OK (IOMMU, vfio-pci, no framebuffer lock): NO"
+      fi
     fi
     return 2
   else
     if (( ENABLE_COLOR )); then
       say "${C_YELLOW}⚠ HEALTH: WARN${C_RESET} (one or more VFIO risk markers detected; no hard vfio-pci errors yet)"
-      say "${C_YELLOW}Kernel regression (known VFIO/simpledrm issue): NO (but kernel is in a high-risk range; see warnings above)${C_RESET}"
+      say "${C_YELLOW}Kernel regression (known VFIO/simpledrm issue): NO (no vfio-pci BAR/probe failures found for this GPU)${C_RESET}"
+      if (( env_ok == 1 )); then
+        say "${C_GREEN}VFIO environment OK (IOMMU, vfio-pci, no framebuffer lock): YES${C_RESET}"
+      else
+        say "${C_YELLOW}VFIO environment OK (IOMMU, vfio-pci, no framebuffer lock): NO${C_RESET}"
+      fi
     else
       say "HEALTH: WARN (one or more VFIO risk markers detected; no hard vfio-pci errors yet)"
-      say "Kernel regression (known VFIO/simpledrm issue): NO (but kernel is in a high-risk range; see warnings above)"
+      say "Kernel regression (known VFIO/simpledrm issue): NO (no vfio-pci BAR/probe failures found for this GPU)"
+      if (( env_ok == 1 )); then
+        say "VFIO environment OK (IOMMU, vfio-pci, no framebuffer lock): YES"
+      else
+        say "VFIO environment OK (IOMMU, vfio-pci, no framebuffer lock): NO"
+      fi
     fi
     return 1
   fi
@@ -3956,20 +3982,6 @@ detect_system() {
     note "Automatic kernel parameter editing is ONLY implemented for GRUB and systemd-boot. For ${CTX[bootloader]}, you must apply kernel parameters manually when prompted."
   fi
 
-  # On openSUSE, warn if we are running a very new default kernel that is
-  # known to cause VFIO binding problems for some AMD GPUs, and suggest
-  # using kernel-longterm instead when available.
-  if is_opensuse_like && opensuse_default_kernel_is_at_least 6 13; then
-    say
-    hdr "Kernel compatibility (openSUSE default kernel vs. VFIO)"
-    note "The running kernel ($(uname -r)) is a very new *-default build (>= 6.13)."
-    note "On some systems this default kernel lets amdgpu claim the guest GPU even when vfio-pci.ids and rd.driver.pre=vfio-pci are set."
-    if rpm -q kernel-longterm >/dev/null 2>&1; then
-      note "The 'kernel-longterm' package is installed. For VFIO you may get more reliable binding by booting the -longterm kernel instead of the default one."
-    else
-      note "If you see VFIO binding failures on this kernel, consider installing 'kernel-longterm' and testing VFIO there."
-    fi
-  fi
 
   # Early detection of existing passthrough config (before user makes changes).
   preflight_existing_config_gate

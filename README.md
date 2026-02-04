@@ -681,25 +681,6 @@ Despite all these protections, **VFIO passthrough remains an advanced configurat
 - Assumes a `systemd` environment.
 - Automatic bootloader editing is implemented only for GRUB; other bootloaders must be configured manually.
 - `wpctl` and a running PipeWire session are needed at runtime for the best audio experience.
--
-### Kernel compatibility note (6.13 and newer)
-+
-+The script is designed to be conservative around **kernel regressions** that affect VFIO binding, especially on AMD GPUs:
-+
-+- On some systems, kernels in the **6.13+ family** (or other very new default kernels) may still allow `amdgpu` to claim the guest GPU even when all recommended VFIO parameters are present.
-+- In contrast, the distribution’s **long-term kernel** (for example `kernel-longterm` on openSUSE) has been observed to bind the same GPU cleanly to `vfio-pci` with identical settings.
-+- Because this can change from release to release, the helper does **not** try to guess future kernel behavior; instead, it:
-+  - Detects that the guest GPU is not on `vfio-pci`.
-+  - Suggests using the long-term kernel as a known‑good baseline.
-+
-If your distribution updates to a newer kernel (such as 6.13 or later) and VFIO binding breaks again, you may need to:
-
-- Boot the long-term / older kernel that is known to work.
-- Re-run `./vfio.sh --detect` to see how the new kernel is binding devices.
-- Wait for future script updates tuned for that kernel series once its behavior is better understood.
-
-The intent is to keep the script tracking real-world kernel behavior over time, rather than pretending all new kernels will always behave the same.
-
 On openSUSE with Btrfs snapshots, remember that **each snapshot has its own `/etc/kernel/cmdline`**:
 
 - When you run `./vfio.sh --reset`, only the **currently booted** snapshot’s kernel parameters are cleaned.
