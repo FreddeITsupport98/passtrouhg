@@ -790,22 +790,28 @@ audit_vfio_health() {
   if (( risk == 0 )); then
     if (( ENABLE_COLOR )); then
       say "${C_GREEN}✔ HEALTH: PASS${C_RESET} (no obvious VFIO-hostile markers detected)"
+      say "${C_GREEN}Kernel regression (known VFIO/simpledrm issue): NO${C_RESET}"
     else
       say "HEALTH: PASS (no obvious VFIO-hostile markers detected)"
+      say "Kernel regression (known VFIO/simpledrm issue): NO"
     fi
     return 0
   elif (( log_bad == 1 )); then
     if (( ENABLE_COLOR )); then
       say "${C_RED}✖ HEALTH: FAIL${C_RESET} (vfio-pci probe/BAR errors seen in logs)"
+      say "${C_RED}Kernel regression (known VFIO/simpledrm issue): YES${C_RESET}"
     else
       say "HEALTH: FAIL (vfio-pci probe/BAR errors seen in logs)"
+      say "Kernel regression (known VFIO/simpledrm issue): YES"
     fi
     return 2
   else
     if (( ENABLE_COLOR )); then
       say "${C_YELLOW}⚠ HEALTH: WARN${C_RESET} (one or more VFIO risk markers detected; no hard vfio-pci errors yet)"
+      say "${C_YELLOW}Kernel regression (known VFIO/simpledrm issue): NO (but kernel is in a high-risk range; see warnings above)${C_RESET}"
     else
       say "HEALTH: WARN (one or more VFIO risk markers detected; no hard vfio-pci errors yet)"
+      say "Kernel regression (known VFIO/simpledrm issue): NO (but kernel is in a high-risk range; see warnings above)"
     fi
     return 1
   fi
