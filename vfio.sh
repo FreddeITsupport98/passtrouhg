@@ -483,6 +483,48 @@ is_service_active() {
   systemctl is-active "$unit" >/dev/null 2>&1
 }
 
+# Plymouth splash can keep GPUs/DRM devices busy during early boot on some
+# desktop setups (especially KDE Plasma + Wayland), which can interfere with
+# vfio-pci claiming the guest GPU. We disable Plymouth in two ways:
+#  1) kernel cmdline: rd.plymouth=0 plymouth.enable=0 and remove splash tokens
+#  2) systemd: mask common plymouth unit names (best-effort)
+plymouth_units() {
+  # Print a whitespace-separated list of common Plymouth unit names.
+  # (Not all distros ship all of these.)
+  printf '%s\n' \
+    plymouth-start.service \
+    plymouth-read-write.service \
+    plymouth-quit.service \
+    plymouth-quit-wait.service \
+    plymouth-switch-root.service \
+    plymouth-halt.service \
+    plymouth-reboot.service
+}
+
+disable_plymouth_services() {
+  have_cmd systemctl || return 0
+
+  local -a units=()
+  # shellcheck disable=SC2207
+  units=( $(plymouth_units) )
+
+  note "Disabling Plymouth boot splash (masking plymouth systemd units; best-effort)."
+  run systemctl mask --now "${units[@]}" 2>/dev/null || true
+  run systemctl daemon-reload 2>/dev/null || true
+}
+
+unmask_plymouth_services() {
+  have_cmd systemctl || return 0
+
+  local -a units=()
+  # shellcheck disable=SC2207
+  units=( $(plymouth_units) )
+
+  note "Re-enabling Plymouth (unmasking plymouth systemd units; best-effort)."
+  run systemctl unmask "${units[@]}" 2>/dev/null || true
+  run systemctl daemon-reload 2>/dev/null || true
+}
+
 grub_cmdline_value() {
   # Returns the configured grub cmdline (GRUB_CMDLINE_LINUX_DEFAULT or GRUB_CMDLINE_LINUX)
   [[ -f /etc/default/grub ]] || return 1
@@ -2425,8 +2467,13 @@ systemd_boot_add_kernel_params() {
     if prompt_yn "Disable boot splash / quiet and enable detailed text logs on boot?" Y "Boot verbosity (persistence)"; then
       new_cmdline="$(remove_param_all "$new_cmdline" "quiet")"
       new_cmdline="$(remove_param_all "$new_cmdline" "splash=silent")"
+      new_cmdline="$(remove_param_all "$new_cmdline" "splash")"
       new_cmdline="$(add_param_once "$new_cmdline" "systemd.show_status=1")"
       new_cmdline="$(add_param_once "$new_cmdline" "loglevel=7")"
+      # Stronger Plymouth disable (initramfs + userspace).
+      new_cmdline="$(add_param_once "$new_cmdline" "rd.plymouth=0")"
+      new_cmdline="$(add_param_once "$new_cmdline" "plymouth.enable=0")"
+      disable_plymouth_services
       verbose_persist=1
     fi
 
@@ -2571,8 +2618,11 @@ systemd_boot_add_kernel_params() {
   if (( verbose_persist )); then
     new_opts="$(remove_param_all "$new_opts" "quiet")"
     new_opts="$(remove_param_all "$new_opts" "splash=silent")"
+    new_opts="$(remove_param_all "$new_opts" "splash")"
     new_opts="$(add_param_once "$new_opts" "systemd.show_status=1")"
     new_opts="$(add_param_once "$new_opts" "loglevel=7")"
+    new_opts="$(add_param_once "$new_opts" "rd.plymouth=0")"
+    new_opts="$(add_param_once "$new_opts" "plymouth.enable=0")"
   fi
   
   say
@@ -2691,8 +2741,13 @@ grub_add_kernel_params() {
   if prompt_yn "Disable boot splash / quiet and enable detailed text logs on boot?" Y "Boot verbosity"; then
     new="$(remove_param_all "$new" "quiet")"
     new="$(remove_param_all "$new" "splash=silent")"
+    new="$(remove_param_all "$new" "splash")"
     new="$(add_param_once "$new" "systemd.show_status=1")"
     new="$(add_param_once "$new" "loglevel=7")"
+    # Stronger Plymouth disable (initramfs + userspace).
+    new="$(add_param_once "$new" "rd.plymouth=0")"
+    new="$(add_param_once "$new" "plymouth.enable=0")"
+    disable_plymouth_services
   fi
 
   # Optional: boot into multi-user.target (text mode) for VFIO debugging.
@@ -3757,6 +3812,11 @@ reset_vfio_all() {
     run systemctl disable --now vfio-bind-selected-gpu.service 2>/dev/null || true
     # Optional boot log dumper unit
     run systemctl disable --now vfio-dump-boot-log.service 2>/dev/null || true
+
+    # If we previously masked plymouth units as part of "disable splash",
+    # unmask them on reset so the system can return to distro defaults.
+    unmask_plymouth_services
+
     run systemctl daemon-reload 2>/dev/null || true
   fi
 
@@ -3814,6 +3874,10 @@ reset_vfio_all() {
       # Boot verbosity and target overrides
       new="$(remove_param_all "$new" "systemd.show_status=1")"
       new="$(remove_param_all "$new" "loglevel=7")"
+      new="$(remove_param_all "$new" "rd.plymouth=0")"
+      new="$(remove_param_all "$new" "plymouth.enable=0")"
+      new="$(remove_param_all "$new" "splash=silent")"
+      new="$(remove_param_all "$new" "splash")"
       new="$(remove_param_all "$new" "systemd.unit=multi-user.target")"
       # Framebuffer / sysfb related tweaks
       new="$(remove_param_all "$new" "video=efifb:off")"
@@ -3851,6 +3915,10 @@ reset_vfio_all() {
       # Boot verbosity and target overrides
       knew="$(remove_param_all "$knew" "systemd.show_status=1")"
       knew="$(remove_param_all "$knew" "loglevel=7")"
+      knew="$(remove_param_all "$knew" "rd.plymouth=0")"
+      knew="$(remove_param_all "$knew" "plymouth.enable=0")"
+      knew="$(remove_param_all "$knew" "splash=silent")"
+      knew="$(remove_param_all "$knew" "splash")"
       knew="$(remove_param_all "$knew" "systemd.unit=multi-user.target")"
       # Framebuffer / sysfb related tweaks
       knew="$(remove_param_all "$knew" "video=efifb:off")"
