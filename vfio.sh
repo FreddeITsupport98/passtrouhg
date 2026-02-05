@@ -504,24 +504,29 @@ plymouth_units() {
 disable_plymouth_services() {
   have_cmd systemctl || return 0
 
-  local -a units=()
-  # shellcheck disable=SC2207
-  units=( $(plymouth_units) )
-
   note "Disabling Plymouth boot splash (masking plymouth systemd units; best-effort)."
-  run systemctl mask --now "${units[@]}" 2>/dev/null || true
+
+  local u
+  while IFS= read -r u; do
+    [[ -n "$u" ]] || continue
+    # Mask each unit individually so one missing unit doesn't prevent the rest.
+    run systemctl mask --now "$u" 2>/dev/null || true
+  done < <(plymouth_units)
+
   run systemctl daemon-reload 2>/dev/null || true
 }
 
 unmask_plymouth_services() {
   have_cmd systemctl || return 0
 
-  local -a units=()
-  # shellcheck disable=SC2207
-  units=( $(plymouth_units) )
-
   note "Re-enabling Plymouth (unmasking plymouth systemd units; best-effort)."
-  run systemctl unmask "${units[@]}" 2>/dev/null || true
+
+  local u
+  while IFS= read -r u; do
+    [[ -n "$u" ]] || continue
+    run systemctl unmask "$u" 2>/dev/null || true
+  done < <(plymouth_units)
+
   run systemctl daemon-reload 2>/dev/null || true
 }
 
