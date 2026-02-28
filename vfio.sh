@@ -1581,7 +1581,8 @@ hdr() {
 }
 
 note() {
-  local msg="$1"
+  # Accept no arguments to emit a blank line.
+  local msg="${1:-}"
   if (( ENABLE_COLOR )); then
     say "${C_DIM}${msg}${C_RESET}"
   else
