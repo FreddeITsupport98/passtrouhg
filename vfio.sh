@@ -144,7 +144,7 @@ prompt_yn() {
 
 usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--verify] [--detect] [--self-test] [--health-check] [--health-check-previous] [--health-check-all] [--reset] [--disable-bootlog]
+Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--verify] [--detect] [--self-test] [--health-check] [--health-check-previous] [--health-check-all] [--reset] [--disable-bootlog] [--install-usb-bt-mitigation]
 
   --debug           Enable verbose debug logging (and bash xtrace).
   --dry-run         Show actions but do not write files / run system-changing commands.
@@ -157,6 +157,8 @@ Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--verify] [--detect] [--se
                      Audit the PREVIOUS boot's kernel logs for VFIO-friendliness (no changes made) and exit.
   --reset           Reset/remove VFIO passthrough settings installed by this script (systemd/modprobe/grub/initramfs/user units).
   --disable-bootlog Disable only the optional VFIO boot log dumper service/unit, keeping the rest of the VFIO setup intact.
+  --install-usb-bt-mitigation
+                   Install ONLY the optional USB Bluetooth reset-spam mitigation (systemd+udev). This detaches USB Bluetooth adapters from btusb on the host but keeps them available for VM passthrough.
 EOF
 }
 
@@ -196,6 +198,9 @@ parse_args() {
         ;;
       --disable-bootlog)
         MODE="disable-bootlog"
+        ;;
+      --install-usb-bt-mitigation)
+        MODE="install-usb-bt-mitigation"
         ;;
       -h|--help)
         usage
@@ -3211,6 +3216,24 @@ EOF
   say "Installed udev isolation rules to prevent the host UI from grabbing the guest GPU (and HDMI audio, if selected)."
 }
 
+usb_bt_mitigation_explain() {
+  note "This optional feature targets a specific (but nasty) class of stability problems: USB Bluetooth adapters that cause repeated kernel timeouts and USB reset storms."
+  note "These storms can make other USB devices randomly glitch/disconnect and can interfere with VFIO/passthrough stability."
+  note
+  note "Why this exists (problem statement):"
+  note "Some USB Bluetooth adapters (or Bluetooth functions inside docks) behave poorly under Linux when driven by the host btusb stack."
+  note "The failure pattern often looks like this in kernel logs:"
+  note "  - Bluetooth: hci0: command ... tx timeout"
+  note "  - Bluetooth: hci0: Resetting usb device"
+  note "  - usb X-Y: reset ... USB device"
+  note
+  note "This is not just log spam: it can be a real reset loop where the USB host controller repeatedly resets that device/path trying to recover."
+  note "If this repeats every few seconds, it can destabilize the entire USB topology behind the same controller/hub/dock, causing symptoms like:"
+  note "  - USB storage intermittently failing / unmounting"
+  note "  - devices stopping working until replug"
+  note "  - general USB flakiness during passthrough testing"
+}
+
 install_usb_bluetooth_disable() {
   backup_file "$USB_BT_SCRIPT"
   backup_file "$USB_BT_SYSTEMD_UNIT"
@@ -4790,12 +4813,9 @@ apply_configuration() {
   say
   hdr "USB Bluetooth (optional)"
   note "Optional because most systems do NOT need this. Only enable it if you have a USB Bluetooth adapter (dongle/dock) that causes instability."
-  note "Symptom: kernel log spam like:"
-  note "  - Bluetooth: hci0: command ... tx timeout"
-  note "  - Bluetooth: hci0: Resetting usb device"
-  note "  - usb X-Y: reset full-speed/high-speed USB device"
-  note "When this happens repeatedly, the USB controller can be forced into constant recovery/reset, which may cause other USB devices to glitch or stop working."
-  note "This option installs a systemd unit + udev rule that detaches USB Bluetooth adapters from the host btusb driver (unbind + driver_override=none)."
+  usb_bt_mitigation_explain
+  note
+  note "What this installs: systemd+udev helper that detaches USB Bluetooth adapters from the host btusb driver (unbind + driver_override=none)."
   note "Result: host-side USB Bluetooth is effectively disabled (no reset-spam), but the USB device stays enumerated so it can be passed through to a VM."
   note "Re-enable later: $USB_BT_SCRIPT --enable (or remove everything via --reset)."
   if prompt_yn "Install and enable automatic USB Bluetooth host detach (systemd+udev)?" N "USB Bluetooth"; then
@@ -5009,7 +5029,7 @@ main() {
   # kernel modules / bindings. Self-test, detect and health-check
   # variants should be able to run in "thin" environments (containers,
   # chroots) where modprobe may be absent.
-  if [[ "$MODE" != "self-test" && "$MODE" != "detect" && "$MODE" != "health-check" && "$MODE" != "health-check-prev" && "$MODE" != "health-check-all" ]]; then
+  if [[ "$MODE" != "self-test" && "$MODE" != "detect" && "$MODE" != "health-check" && "$MODE" != "health-check-prev" && "$MODE" != "health-check-all" && "$MODE" != "install-usb-bt-mitigation" ]]; then
     need_cmd modprobe
   fi
 
@@ -5082,6 +5102,27 @@ main() {
     require_root "$@"
     require_systemd
     disable_bootlog_dumper
+    exit 0
+  fi
+
+  if [[ "$MODE" == "install-usb-bt-mitigation" ]]; then
+    require_root "$@"
+    require_systemd
+
+    say
+    hdr "USB Bluetooth reset-spam mitigation (standalone install)"
+    usb_bt_mitigation_explain
+    say
+    note "This will install:"
+    note "  - $USB_BT_SCRIPT"
+    note "  - $USB_BT_SYSTEMD_UNIT"
+    note "  - $USB_BT_UDEV_RULE"
+    if prompt_yn "Install USB Bluetooth host-detach mitigation now?" Y "USB Bluetooth"; then
+      install_usb_bluetooth_disable
+      say "Done."
+    else
+      die "Aborted by user"
+    fi
     exit 0
   fi
 
