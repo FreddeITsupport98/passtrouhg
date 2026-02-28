@@ -26,7 +26,12 @@ AUDIO_SCRIPT="/usr/local/bin/vfio-set-host-audio.sh"
 SYSTEMD_UNIT="/etc/systemd/system/vfio-bind-selected-gpu.service"
 MODULES_LOAD="/etc/modules-load.d/vfio.conf"
 BLACKLIST_FILE="/etc/modprobe.d/vfio-optional-blacklist.conf"
+SOFTDEP_FILE="/etc/modprobe.d/vfio-softdep.conf"
 DRACUT_VFIO_CONF="/etc/dracut.conf.d/10-vfio.conf"
+UDEV_ISOLATION_RULE="/etc/udev/rules.d/99-vfio-isolation.rules"
+USB_BT_SCRIPT="/usr/local/sbin/vfio-usb-bluetooth.sh"
+USB_BT_SYSTEMD_UNIT="/etc/systemd/system/vfio-disable-usb-bluetooth.service"
+USB_BT_UDEV_RULE="/etc/udev/rules.d/99-vfio-disable-usb-bluetooth.rules"
 
 DEBUG=0
 DRY_RUN=0
@@ -346,8 +351,8 @@ gpu_in_use_preflight() {
     local slot="${bdf%.*}"
     local audio_bdf="${slot}.1"  # Commonly function 1 is the HDMI audio function
     if [[ -d "/sys/bus/pci/devices/$audio_bdf" ]]; then
-      local snd snd_card_path card_id
-      for snd in /sys/bus/pci/devices/$audio_bdf/sound/card*; do
+      local snd card_id
+      for snd in /sys/bus/pci/devices/"$audio_bdf"/sound/card*; do
         [[ -d "$snd" ]] || continue
         card_id="${snd##*/card}"
         if command -v fuser >/dev/null 2>&1; then
@@ -817,7 +822,7 @@ audit_vfio_health() {
         boot_opt="-b${VFIO_HEALTH_BOOT_OFFSET}"
       fi
     fi
-    log_data="$(journalctl -k ${boot_opt} --no-pager 2>/dev/null || true)"
+    log_data="$(journalctl -k "${boot_opt}" --no-pager 2>/dev/null || true)"
   else
     if ! have_cmd dmesg; then
       say "No journalctl or dmesg command available; skipping log-based checks."
@@ -940,8 +945,8 @@ health_check_all() {
   hdr "VFIO Kernel Health Audit (all GPUs)"
 
   local -a gpu_bdfs=()
-  local gpu_bdf gpu_desc vendor_id device_id audio_csv audio_descs
-  while IFS=$'\t' read -r gpu_bdf gpu_desc vendor_id device_id audio_csv audio_descs; do
+  local gpu_bdf gpu_desc vendor_id _device_id audio_csv audio_descs
+  while IFS=$'\t' read -r gpu_bdf gpu_desc vendor_id _device_id audio_csv audio_descs; do
     [[ -n "${gpu_bdf:-}" ]] || continue
     gpu_bdfs+=("$gpu_bdf")
   done < <(gpu_discover_all_sysfs)
@@ -1477,7 +1482,7 @@ detect_existing_vfio_report() {
   fi
   if [[ -d /etc/libvirt/hooks ]]; then
     print_kv "/etc/libvirt/hooks" "present"
-    print_kv "hook files" "$(ls -1 /etc/libvirt/hooks 2>/dev/null | tr '\n' ' ' || true)"
+    print_kv "hook files" "$(find /etc/libvirt/hooks -maxdepth 1 -type f -printf '%f ' 2>/dev/null || true)"
   else
     print_kv "/etc/libvirt/hooks" "missing"
   fi
@@ -1992,7 +1997,7 @@ EOF
 install_softdep_config() {
   local guest_vendor="$1"
   local target_driver=""
-  
+
   case "${guest_vendor,,}" in
     10de) target_driver="nvidia" ;;
     1002) target_driver="amdgpu" ;;
@@ -2000,7 +2005,7 @@ install_softdep_config() {
     *) return 0 ;; # Unknown vendor, skip
   esac
 
-  local file="/etc/modprobe.d/vfio-softdep.conf"
+  local file="$SOFTDEP_FILE"
   backup_file "$file"
 
   write_file_atomic "$file" 0644 "root:root" <<EOF
@@ -2058,7 +2063,7 @@ grub_read_cmdline() {
   count="$(grep -Ec "^${key}=" /etc/default/grub || true)"
   [[ "$count" == "1" ]] || die "Expected exactly 1 ${key}= line in /etc/default/grub, found: $count"
 
-  line="${line#${key}=}"
+  line="${line#"${key}"=}"
   line="$(trim "$line")"
 
   # Strip matching quotes if present.
@@ -2156,7 +2161,7 @@ add_param_once() {
   if grep -Eq "(^|[[:space:]])${param//./\\.}([[:space:]]|$)" <<<"$cmdline"; then
     echo "$cmdline"
   else
-    echo "$(trim "$cmdline $param")"
+    trim "$cmdline $param"
   fi
 }
 
@@ -2171,7 +2176,7 @@ remove_param_all() {
     fi
     out+="${out:+ }$tok"
   done
-  echo "$(trim "$out")"
+  trim "$out"
 }
 
 # Return 0 if the running kernel looks like an openSUSE default kernel
@@ -2180,7 +2185,7 @@ remove_param_all() {
 # default kernels, and to suggest booting the long-term kernel instead.
 opensuse_default_kernel_is_at_least() {
   local min_major="$1" min_minor="$2"
-  local kver rel base major minor
+  local kver base major minor
 
   kver="$(uname -r 2>/dev/null || echo '')"
   [[ -n "$kver" ]] || return 1
@@ -2385,7 +2390,12 @@ systemd_boot_add_kernel_params() {
     # mitigation (video=efifb:off, etc.) is handled by a dedicated prompt
     # below so users understand why it is needed and can skip it if they
     # know their boot VGA path is already safe.
-    local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt" ${GRUB_EXTRA_PARAMS:-})
+    local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt")
+    if [[ -n "${GRUB_EXTRA_PARAMS:-}" ]]; then
+      local -a extra=()
+      read -r -a extra <<<"${GRUB_EXTRA_PARAMS}"
+      params_to_add+=("${extra[@]}")
+    fi
     # If we know the exact vfio-pci.ids value for the selected guest GPU,
     # persist it into /etc/kernel/cmdline as well.
     if [[ -n "${CTX[guest_vfio_ids]:-}" ]]; then
@@ -2607,7 +2617,12 @@ systemd_boot_add_kernel_params() {
   current_opts="$(grep -m1 -E '^options[[:space:]]+' "$entry_path" 2>/dev/null | sed -E 's/^options[[:space:]]+//')"
   current_opts="$(trim "${current_opts:-}")"
 
-  local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt" ${GRUB_EXTRA_PARAMS:-})
+  local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt")
+  if [[ -n "${GRUB_EXTRA_PARAMS:-}" ]]; then
+    local -a extra=()
+    read -r -a extra <<<"${GRUB_EXTRA_PARAMS}"
+    params_to_add+=("${extra[@]}")
+  fi
   # Mirror vfio-pci.ids for the selected guest GPU into the live entry as
   # well so the current kernel uses the same binding.
   if [[ -n "${CTX[guest_vfio_ids]:-}" ]]; then
@@ -2665,7 +2680,12 @@ grub_add_kernel_params() {
   # Merge standard params with any discovered extras. Framebuffer mitigation
   # (video=efifb:off, etc.) is offered via an explicit prompt below so that
   # users understand why it is being added.
-  local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt" ${GRUB_EXTRA_PARAMS:-})
+  local -a params_to_add=("$(cpu_iommu_param)" "iommu=pt")
+  if [[ -n "${GRUB_EXTRA_PARAMS:-}" ]]; then
+    local -a extra=()
+    read -r -a extra <<<"${GRUB_EXTRA_PARAMS}"
+    params_to_add+=("${extra[@]}")
+  fi
   # If we know vfio-pci.ids for the selected guest GPU, also place it on
   # the GRUB cmdline so vfio-pci can bind in the initramfs.
   if [[ -n "${CTX[guest_vfio_ids]:-}" ]]; then
@@ -3159,7 +3179,7 @@ install_udev_isolation() {
   local gpu_bdf="$1"
   local audio_csv="$2"
 
-  local rule_file="/etc/udev/rules.d/99-vfio-isolation.rules"
+  local rule_file="$UDEV_ISOLATION_RULE"
   backup_file "$rule_file"
 
   # Base rule for the guest GPU itself.
@@ -3189,6 +3209,157 @@ EOF
   fi
 
   say "Installed udev isolation rules to prevent the host UI from grabbing the guest GPU (and HDMI audio, if selected)."
+}
+
+install_usb_bluetooth_disable() {
+  backup_file "$USB_BT_SCRIPT"
+  backup_file "$USB_BT_SYSTEMD_UNIT"
+  backup_file "$USB_BT_UDEV_RULE"
+
+  write_file_atomic "$USB_BT_SCRIPT" 0755 "root:root" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODE="disable"  # disable | enable
+if [[ "${1:-}" == "--enable" ]]; then
+  MODE="enable"
+elif [[ "${1:-}" == "--disable" || -z "${1:-}" ]]; then
+  MODE="disable"
+else
+  echo "Usage: $(basename "$0") [--disable|--enable]" >&2
+  exit 2
+fi
+
+# Return 0 if a USB device (sysfs directory) looks like it contains a Bluetooth interface.
+# We detect via either:
+# - interface class/subclass (0xe0/0x01 = Wireless/Bluetooth), or
+# - interface driver bound to btusb (covers vendor-specific interfaces).
+usb_device_is_bluetooth() {
+  local dev="$1"
+  local intf cls sub drv
+
+  shopt -s nullglob
+  for intf in "$dev":*; do
+    # Driver-based detection (best-effort)
+    if [[ -L "$intf/driver" ]]; then
+      drv="$(basename "$(readlink -f "$intf/driver" 2>/dev/null || true)")"
+      if [[ "$drv" == "btusb" ]]; then
+        return 0
+      fi
+    fi
+
+    # Class-based detection
+    if [[ -f "$intf/bInterfaceClass" && -f "$intf/bInterfaceSubClass" ]]; then
+      cls="$(tr -d '\n' <"$intf/bInterfaceClass" | tr 'A-F' 'a-f')"
+      sub="$(tr -d '\n' <"$intf/bInterfaceSubClass" | tr 'A-F' 'a-f')"
+      if [[ "$cls" == "e0" && "$sub" == "01" ]]; then
+        return 0
+      fi
+    fi
+  done
+  shopt -u nullglob
+
+  return 1
+}
+
+intf_disable() {
+  local intf="$1"
+  local name drv
+  name="$(basename "$intf")"
+
+  # Prevent btusb from binding again.
+  if [[ -w "$intf/driver_override" ]]; then
+    echo "none" >"$intf/driver_override" 2>/dev/null || true
+  fi
+
+  # If currently bound, unbind from btusb.
+  if [[ -L "$intf/driver" ]]; then
+    drv="$(basename "$(readlink -f "$intf/driver" 2>/dev/null || true)")"
+    if [[ "$drv" == "btusb" && -w /sys/bus/usb/drivers/btusb/unbind ]]; then
+      echo "$name" >/sys/bus/usb/drivers/btusb/unbind 2>/dev/null || true
+    fi
+  fi
+}
+
+intf_enable() {
+  local intf="$1"
+  local name
+  name="$(basename "$intf")"
+
+  # Allow drivers to bind again.
+  if [[ -w "$intf/driver_override" ]]; then
+    echo "" >"$intf/driver_override" 2>/dev/null || true
+  fi
+
+  # Best-effort rebind.
+  if [[ -w /sys/bus/usb/drivers/btusb/bind ]]; then
+    echo "$name" >/sys/bus/usb/drivers/btusb/bind 2>/dev/null || true
+  fi
+}
+
+changed=0
+for dev in /sys/bus/usb/devices/*; do
+  [[ -f "$dev/idVendor" && -f "$dev/idProduct" ]] || continue
+
+  if usb_device_is_bluetooth "$dev"; then
+    shopt -s nullglob
+    for intf in "$dev":*; do
+      [[ -d "$intf" ]] || continue
+      if [[ "$MODE" == "disable" ]]; then
+        intf_disable "$intf"
+      else
+        intf_enable "$intf"
+      fi
+    done
+    shopt -u nullglob
+
+    echo "vfio-usb-bluetooth: ${MODE}d $(basename "$dev") ($(cat "$dev/idVendor" 2>/dev/null || echo '?'):$(cat "$dev/idProduct" 2>/dev/null || echo '?'))"
+    changed=1
+  fi
+done
+
+if (( ! changed )); then
+  echo "vfio-usb-bluetooth: no matching USB Bluetooth devices found"
+fi
+EOF
+
+  write_file_atomic "$USB_BT_SYSTEMD_UNIT" 0644 "root:root" <<EOF
+[Unit]
+Description=Detach USB Bluetooth adapters from btusb (VFIO helper)
+After=systemd-udevd.service
+Wants=systemd-udevd.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=$USB_BT_SCRIPT --disable
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  write_file_atomic "$USB_BT_UDEV_RULE" 0644 "root:root" <<'EOF'
+# Generated by vfio.sh
+# Trigger the disable service when a USB Bluetooth interface appears.
+# - Matches the standard Bluetooth USB interface class/subclass (e0/01)
+# - Also matches interfaces that bind to btusb (covers vendor-specific descriptors)
+
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_interface", ATTR{bInterfaceClass}=="e0", ATTR{bInterfaceSubClass}=="01", TAG+="systemd", ENV{SYSTEMD_WANTS}+="vfio-disable-usb-bluetooth.service"
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_interface", DRIVERS=="btusb", TAG+="systemd", ENV{SYSTEMD_WANTS}+="vfio-disable-usb-bluetooth.service"
+EOF
+
+  if have_cmd udevadm; then
+    run udevadm control --reload-rules
+    # Trigger is best-effort; it can be noisy on some systems, so ignore failures.
+    run udevadm trigger --subsystem-match=usb 2>/dev/null || true
+  fi
+
+  run systemctl daemon-reload
+  run systemctl enable --now vfio-disable-usb-bluetooth.service
+
+  say "Installed USB Bluetooth disable helper: $USB_BT_SCRIPT"
+  say "Installed systemd unit: $USB_BT_SYSTEMD_UNIT"
+  say "Installed udev rule: $USB_BT_UDEV_RULE"
 }
 
 # Install a small helper that dumps the current boot's VFIO-related logs to the
@@ -3667,9 +3838,14 @@ generate_rollback_script() {
   local managed_paths=(
     "$MODULES_LOAD"
     "$BLACKLIST_FILE"
+    "$SOFTDEP_FILE"
     "$BIND_SCRIPT"
     "$AUDIO_SCRIPT"
     "$SYSTEMD_UNIT"
+    "$UDEV_ISOLATION_RULE"
+    "$USB_BT_SCRIPT"
+    "$USB_BT_SYSTEMD_UNIT"
+    "$USB_BT_UDEV_RULE"
     "/etc/systemd/system/vfio-dump-boot-log.service"
     "/home/${SUDO_USER:-root}/.local/bin/vfio-dump-boot-log.sh"
     "$CONF_FILE"
@@ -3688,9 +3864,10 @@ set -euo pipefail
 
 echo "Rolling back VFIO setup from ${RUN_TS}..."
 
-# Disable/stop VFIO bind service (best-effort)
+# Disable/stop VFIO-related services (best-effort)
 if command -v systemctl >/dev/null 2>&1; then
   systemctl disable --now vfio-bind-selected-gpu.service 2>/dev/null || true
+  systemctl disable --now vfio-disable-usb-bluetooth.service 2>/dev/null || true
   systemctl daemon-reload 2>/dev/null || true
 fi
 
@@ -3817,6 +3994,8 @@ reset_vfio_all() {
     run systemctl disable --now vfio-bind-selected-gpu.service 2>/dev/null || true
     # Optional boot log dumper unit
     run systemctl disable --now vfio-dump-boot-log.service 2>/dev/null || true
+    # Optional USB Bluetooth disable unit
+    run systemctl disable --now vfio-disable-usb-bluetooth.service 2>/dev/null || true
 
     # If we previously masked plymouth units as part of "disable splash",
     # unmask them on reset so the system can return to distro defaults.
@@ -3825,13 +4004,21 @@ reset_vfio_all() {
     run systemctl daemon-reload 2>/dev/null || true
   fi
 
-  # Remove managed files, including the optional boot log dumper bits
+  # Remove managed files, including optional helpers
   local bootlog_unit="/etc/systemd/system/vfio-dump-boot-log.service"
   local bootlog_bin="/home/${SUDO_USER:-root}/.local/bin/vfio-dump-boot-log.sh"
 
   run rm -f "$SYSTEMD_UNIT" "$BIND_SCRIPT" "$AUDIO_SCRIPT" \
            "$CONF_FILE" "$MODULES_LOAD" "$BLACKLIST_FILE" \
+           "$SOFTDEP_FILE" "$DRACUT_VFIO_CONF" \
+           "$UDEV_ISOLATION_RULE" \
+           "$USB_BT_SCRIPT" "$USB_BT_SYSTEMD_UNIT" "$USB_BT_UDEV_RULE" \
            "$bootlog_unit" "$bootlog_bin" 2>/dev/null || true
+
+  if have_cmd udevadm; then
+    run udevadm control --reload-rules 2>/dev/null || true
+    run udevadm trigger 2>/dev/null || true
+  fi
 
   # Remove user unit for SUDO_USER (and optionally all /home users)
   if [[ -n "${SUDO_USER:-}" ]]; then
@@ -3958,7 +4145,9 @@ reset_vfio_all() {
       else
         out=""
       fi
-      [[ -n "$out" ]] && run grub-mkconfig -o "$out" || true
+      if [[ -n "$out" ]]; then
+        run grub-mkconfig -o "$out" || true
+      fi
     elif command -v grub2-mkconfig >/dev/null 2>&1; then
       local out
       if [[ -d /boot/grub2 ]]; then
@@ -3968,7 +4157,9 @@ reset_vfio_all() {
       else
         out=""
       fi
-      [[ -n "$out" ]] && run grub2-mkconfig -o "$out" || true
+      if [[ -n "$out" ]]; then
+        run grub2-mkconfig -o "$out" || true
+      fi
     fi
 
     # After regenerating grub.cfg, run a best-effort syntax check. If GRUB
@@ -4124,8 +4315,8 @@ user_selection() {
 
   # Discover GPUs (via sysfs; lspci is only used for human-readable descriptions)
   local -a gpu_bdfs=() gpu_descs=() gpu_vendor_ids=() gpu_audio_bdfs_csv=() gpu_audio_descs=()
-  local gpu_bdf gpu_desc vendor_id device_id audio_csv audio_descs
-  while IFS=$'\t' read -r gpu_bdf gpu_desc vendor_id device_id audio_csv audio_descs; do
+  local gpu_bdf gpu_desc vendor_id _device_id audio_csv audio_descs
+  while IFS=$'\t' read -r gpu_bdf gpu_desc vendor_id _device_id audio_csv audio_descs; do
     [[ -n "${gpu_bdf:-}" ]] || continue
     gpu_bdfs+=("$gpu_bdf")
     gpu_descs+=("$gpu_desc")
@@ -4597,6 +4788,23 @@ apply_configuration() {
   fi
 
   say
+  hdr "USB Bluetooth (optional)"
+  note "Optional because most systems do NOT need this. Only enable it if you have a USB Bluetooth adapter (dongle/dock) that causes instability."
+  note "Symptom: kernel log spam like:"
+  note "  - Bluetooth: hci0: command ... tx timeout"
+  note "  - Bluetooth: hci0: Resetting usb device"
+  note "  - usb X-Y: reset full-speed/high-speed USB device"
+  note "When this happens repeatedly, the USB controller can be forced into constant recovery/reset, which may cause other USB devices to glitch or stop working."
+  note "This option installs a systemd unit + udev rule that detaches USB Bluetooth adapters from the host btusb driver (unbind + driver_override=none)."
+  note "Result: host-side USB Bluetooth is effectively disabled (no reset-spam), but the USB device stays enumerated so it can be passed through to a VM."
+  note "Re-enable later: $USB_BT_SCRIPT --enable (or remove everything via --reset)."
+  if prompt_yn "Install and enable automatic USB Bluetooth host detach (systemd+udev)?" N "USB Bluetooth"; then
+    install_usb_bluetooth_disable
+  else
+    note "Skipping USB Bluetooth helper."
+  fi
+
+  say
   hdr "Boot configuration (IOMMU / boot loader)"
   local bl2="${CTX[bootloader]}"
   note "IOMMU must be enabled for PCI passthrough to work."
@@ -4864,20 +5072,20 @@ main() {
   fi
 
   if [[ "$MODE" == "reset" ]]; then
-    require_root
+    require_root "$@"
     require_systemd
     reset_vfio_all
     exit 0
   fi
 
   if [[ "$MODE" == "disable-bootlog" ]]; then
-    require_root
+    require_root "$@"
     require_systemd
     disable_bootlog_dumper
     exit 0
   fi
 
-  require_root
+  require_root "$@"
   require_systemd
 
   detect_system

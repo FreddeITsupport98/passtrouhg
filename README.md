@@ -60,6 +60,11 @@ The script uses the following paths on the host:
   - `/usr/local/bin/vfio-set-host-audio.sh` – optional helper that sets your **desktop default audio sink** (PipeWire/PulseAudio) after login.
   - `~/.config/systemd/user/vfio-set-host-audio.service` – optional user‑level systemd unit to run the audio helper on login.
 
+- **USB Bluetooth passthrough stability (optional)**
+  - `/usr/local/sbin/vfio-usb-bluetooth.sh` – helper to detach USB Bluetooth adapters from the host `btusb` driver (stops reset-spam while keeping the device available for VM USB passthrough).
+  - `/etc/systemd/system/vfio-disable-usb-bluetooth.service` – optional system service that runs the helper at boot.
+  - `/etc/udev/rules.d/99-vfio-disable-usb-bluetooth.rules` – optional udev rule that triggers the systemd service when a USB Bluetooth interface appears.
+
 - **Backups and rollback**
   - `*.bak.<timestamp>` – backups of files the script edits (e.g. `/etc/default/grub.bak.20250101-120000`).
   - `/root/vfio-rollback-<timestamp>.sh` – rollback script that tries to restore backups, regenerate GRUB and rebuild initramfs.
@@ -206,8 +211,9 @@ The script supports several modes controlled by flags. By default, without any f
   - **Destructive clean-up** of everything this script manages.
   - Requires confirmation by typing a phrase (`RESET VFIO`).
   - Performs:
-    - Disables and stops `vfio-bind-selected-gpu.service` and, if installed, the VFIO boot-log dumper service.
-    - Removes its systemd unit, bind script, audio script, config, vfio modules‑load entry, optional blacklist, and optional boot-log helper.
+  -    - Disables and stops `vfio-bind-selected-gpu.service` and, if installed, the VFIO boot-log dumper service.
+  -    - Disables and removes the optional **USB Bluetooth disable** service/rules if they were installed.
+  -    - Removes its systemd unit, bind script, audio script, config, vfio modules‑load entry, optional blacklist, and optional boot-log helper.
     - Optionally removes user systemd audio units under `/home/*`.
     - Optionally removes VFIO/IOMMU and related debug kernel parameters from:
       - `/etc/default/grub` on classic GRUB systems, with:
