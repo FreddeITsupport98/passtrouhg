@@ -471,6 +471,78 @@ print_kv() {
 readable_file() {
   [[ -f "$1" && -r "$1" ]]
 }
+report_vm_network_precheck() {
+  # Detect a common host-side cause of "VM has no internet":
+  # net.ipv4.ip_forward=0 while using libvirt NAT (virbr0/default network).
+  # This is informational and does not change system state.
+  say
+  if (( ENABLE_COLOR )); then
+    say "${C_CYAN}-- VM internet precheck (libvirt / virt-manager) --${C_RESET}"
+  else
+    say "-- VM internet precheck (libvirt / virt-manager) --"
+  fi
+
+  local ip4_fwd="unknown" ip6_fwd="unknown"
+  if [[ -r /proc/sys/net/ipv4/ip_forward ]]; then
+    read -r ip4_fwd </proc/sys/net/ipv4/ip_forward || ip4_fwd="unknown"
+  fi
+  if [[ -r /proc/sys/net/ipv6/conf/all/forwarding ]]; then
+    read -r ip6_fwd </proc/sys/net/ipv6/conf/all/forwarding || ip6_fwd="unknown"
+  fi
+
+  local virbr0_state="missing"
+  if [[ -d /sys/class/net/virbr0 ]]; then
+    virbr0_state="present"
+  fi
+
+  local sysctl_zero_file=""
+  if [[ -f /etc/sysctl.d/70-yast.conf ]] && \
+     grep -Eq '^[[:space:]]*net\.ipv4\.ip_forward[[:space:]]*=[[:space:]]*0([[:space:]]|$)' /etc/sysctl.d/70-yast.conf; then
+    sysctl_zero_file="/etc/sysctl.d/70-yast.conf"
+  elif [[ -d /etc/sysctl.d ]]; then
+    local sf
+    shopt -s nullglob
+    for sf in /etc/sysctl.d/*.conf; do
+      if grep -Eq '^[[:space:]]*net\.ipv4\.ip_forward[[:space:]]*=[[:space:]]*0([[:space:]]|$)' "$sf"; then
+        sysctl_zero_file="$sf"
+        break
+      fi
+    done
+    shopt -u nullglob
+  fi
+
+  print_kv "virbr0 bridge" "$virbr0_state"
+  print_kv "net.ipv4.ip_forward" "$ip4_fwd"
+  print_kv "net.ipv6.forwarding" "$ip6_fwd"
+
+  if [[ "$ip4_fwd" == "0" ]]; then
+    if (( ENABLE_COLOR )); then
+      say "${C_YELLOW}WARN${C_RESET}: net.ipv4.ip_forward=0 can break VM internet on libvirt NAT (guest gets DHCP but no outbound internet)."
+    else
+      say "WARN: net.ipv4.ip_forward=0 can break VM internet on libvirt NAT (guest gets DHCP but no outbound internet)."
+    fi
+    note "Fix now (temporary): sudo sysctl -w net.ipv4.ip_forward=1"
+    if [[ -n "$sysctl_zero_file" ]]; then
+      note "Persistent blocker found: $sysctl_zero_file sets net.ipv4.ip_forward = 0"
+      note "Set it to: net.ipv4.ip_forward = 1, then run: sudo sysctl --system"
+    else
+      note "Persistent fix: set net.ipv4.ip_forward = 1 in /etc/sysctl.d/*.conf, then run: sudo sysctl --system"
+    fi
+    return 1
+  fi
+
+  if [[ "$virbr0_state" == "missing" ]]; then
+    note "INFO: virbr0 bridge is missing. If you use virt-manager NAT, start/autostart the default libvirt network."
+    note "Try: sudo virsh -c qemu:///system net-start default && sudo virsh -c qemu:///system net-autostart default"
+  fi
+
+  if (( ENABLE_COLOR )); then
+    say "${C_GREEN}OK${C_RESET}: no obvious host forwarding blocker detected for libvirt NAT networking."
+  else
+    say "OK: no obvious host forwarding blocker detected for libvirt NAT networking."
+  fi
+  return 0
+}
 
 csv_each() {
   # csv_each "a,b,c" -> prints one per line
@@ -1491,6 +1563,7 @@ detect_existing_vfio_report() {
   else
     print_kv "/etc/libvirt/hooks" "missing"
   fi
+  report_vm_network_precheck || true
 
   say "==== End report ===="
 }
@@ -3827,6 +3900,9 @@ verify_setup() {
     fi
   fi
 
+  # Host-side VM internet sanity for libvirt/virt-manager NAT networking.
+  # Informational only; does not affect VFIO PASS/FAIL grading.
+  report_vm_network_precheck || true
   say
   if (( ok )); then
     if (( ENABLE_COLOR )); then

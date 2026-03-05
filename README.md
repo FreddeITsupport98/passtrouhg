@@ -15,6 +15,11 @@ The script is designed to be **interactive, defensive and reversible**, so that 
 
 > **Important:** This script does *not* create or modify VMs. It only prepares your host so that a hypervisor (libvirt/qemu, etc.) can passthrough the selected PCI devices.
 
+## Unreleased
+- Added a host VM internet precheck in `--detect` and `--verify` for libvirt/virt-manager NAT networking.
+- The precheck now warns when `net.ipv4.ip_forward=0` (common cause of guest DHCP-without-internet) and prints temporary and persistent fix steps.
+- Added a hint for missing `virbr0` with quick `virsh -c qemu:///system net-start/net-autostart default` guidance.
+
 ---
 
 ## High‑level design
@@ -622,6 +627,7 @@ This will:
 - Confirm host audio BDF is **not** bound to `vfio-pci`.
 - Check for presence and state of the bind script and systemd unit.
 - Provide hints for IOMMU and GRUB cmdline.
+- Run a host VM internet precheck for libvirt/virt-manager NAT (`virbr0`, `net.ipv4.ip_forward`) and print direct remediation steps if forwarding is disabled.
 
 If it prints `RESULT: PASS`, your VFIO binding base is correct; remaining problems will usually live in VM configuration.
 
@@ -640,6 +646,7 @@ Use this when you want to audit:
 - Where VFIO shows up in initramfs and modprobe configs.
 - What drivers are currently bound to which GPU/audio devices.
 - The **Resizable BAR status** of the configured guest GPU (shown as INFO, based on `lspci -vv` output; the script does not force ReBAR on or off and only reports what the kernel advertises). You should ensure **Above 4G Decoding / 64-bit BAR support** is enabled in BIOS for GPU passthrough; ReBAR itself is optional and may need to be toggled depending on your platform.
+- A host VM internet precheck for libvirt/virt-manager NAT that explicitly detects `net.ipv4.ip_forward=0` and prints a known-good fix path.
 
 ### Resetting everything: `--reset`
 
