@@ -239,6 +239,62 @@ maybe_offer_detect_accountsservice_install() {
   fi
   DRY_RUN="$prev_dry"
 }
+
+list_stale_vfio_user_audio_units() {
+  # Emit TSV: user<TAB>unit_path for user units that reference the
+  # optional vfio-set-host-audio service while the helper script is missing.
+  [[ -x "$AUDIO_SCRIPT" ]] && return 0
+
+  local d user unit
+  for d in /home/*; do
+    [[ -d "$d" ]] || continue
+    user="$(basename "$d")"
+    unit="$d/.config/systemd/user/vfio-set-host-audio.service"
+    [[ -f "$unit" ]] || continue
+    printf '%s\t%s\n' "$user" "$unit"
+  done
+}
+
+maybe_offer_detect_stale_user_audio_unit_cleanup() {
+  [[ "${MODE:-}" == "detect" ]] || return 0
+
+  local stale
+  stale="$(list_stale_vfio_user_audio_units || true)"
+  [[ -n "$stale" ]] || return 0
+
+  say
+  hdr "Detect action (optional): stale user audio unit cleanup"
+  note "Found vfio-set-host-audio user unit(s) but $AUDIO_SCRIPT is missing."
+  note "This can spam user-session failures and be mistaken for display-manager issues."
+  printf '%s\n' "$stale" | awk -F'\t' '{print "  - user=" $1 " unit=" $2}'
+
+  if ! prompt_yn "Remove stale vfio-set-host-audio user unit(s) now from detect mode?" Y "User audio unit cleanup"; then
+    return 0
+  fi
+  if ! confirm_phrase "This will remove stale user service files now." "REMOVE STALE AUDIO UNIT"; then
+    note "Skipping stale unit cleanup (confirmation phrase not provided)."
+    return 0
+  fi
+
+  local prev_dry="${DRY_RUN:-0}"
+  DRY_RUN=0
+
+  local user unit uid
+  while IFS=$'\t' read -r user unit; do
+    [[ -n "$unit" ]] || continue
+    [[ -f "$unit" ]] || continue
+    if have_cmd runuser; then
+      uid="$(id -u "$user" 2>/dev/null || true)"
+      if [[ -n "$uid" ]]; then
+        runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user disable --now vfio-set-host-audio.service >/dev/null 2>&1 || true
+      fi
+    fi
+    run rm -f "$unit"
+    say "Removed stale unit for user '$user': $unit"
+  done <<<"$stale"
+
+  DRY_RUN="$prev_dry"
+}
 host_has_amd_gpu() {
   have_cmd lspci || return 1
   lspci -n 2>/dev/null | grep -q '1002:'
@@ -1843,6 +1899,7 @@ detect_existing_vfio_report() {
 
   # In detect mode, offer immediate remediation interactively.
   maybe_offer_detect_accountsservice_install
+  maybe_offer_detect_stale_user_audio_unit_cleanup
   # Health check
   say
   if (( ENABLE_COLOR )); then
