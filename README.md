@@ -24,8 +24,11 @@ The script is designed to be **interactive, defensive and reversible**, so that 
 - Added a LightDM fallback configuration path (`/etc/lightdm/lightdm.conf.d/90-vfio-greeter-fallback.conf`) to set `greeter-hide-users=true` when AccountsService install is unavailable, reducing restart-loop risk.
 - Added a `--detect`/`--verify` report signal `LightDM/AccountsService` that explicitly shows whether LightDM is detected and whether `org.freedesktop.Accounts` is available.
 - In `--detect`, when `LightDM/AccountsService` is WARN, the script now offers an interactive remediation action to install `accountsservice` immediately (with explicit confirmation).
+- Hardened `accountsservice` presence detection so a standalone DBus service file no longer suppresses remediation prompts when the actual daemon/service backend is missing.
 - In `--detect`, when AMD GPUs are detected and `vendor-reset` is missing, the script now offers an interactive remediation action to install `vendor-reset` immediately (with explicit confirmation).
 - Improved `--detect` vendor-reset remediation on apt-based systems: it now tries discovered apt package names (not only fixed names), and if unavailable, offers an explicit opt-in source DKMS fallback flow.
+- Refined `vendor-reset` recommendation/offer scope: the script now uses observed AMD reset-failure signatures from recent kernel logs (VFIO/FLR/D3 timeout/failure markers) instead of static GPU-family matching.
+- In `--detect`, `vendor-reset` is now recommended/offered only when those reset-failure markers are present; otherwise AMD hosts are reported as `N/A` by default.
 - Added a host VM internet precheck in `--detect` and `--verify` for libvirt/virt-manager NAT networking.
 - The precheck now warns when `net.ipv4.ip_forward=0` (common cause of guest DHCP-without-internet) and prints temporary and persistent fix steps.
 - Added a hint for missing `virbr0` with quick `virsh -c qemu:///system net-start/net-autostart default` guidance.

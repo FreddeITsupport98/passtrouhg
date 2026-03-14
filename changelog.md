@@ -10,10 +10,14 @@
   - Adds optional fallback file `/etc/lightdm/lightdm.conf.d/90-vfio-greeter-fallback.conf` with `greeter-hide-users=true` if installation is unavailable.
 - Added `LightDM/AccountsService` status output to `--detect` and `--verify` reports so display-manager dependency health is visible before reboot.
 - In `--detect`, when LightDM is present and AccountsService is missing, added an interactive remediation offer that can install `accountsservice` immediately after explicit confirmation.
+- Fixed `accountsservice` detection false-positive path: a standalone DBus service file no longer counts as installed unless an actual daemon/service backend is present.
 - In `--detect`, when AMD GPUs are present and `vendor-reset` is missing, added an interactive remediation offer that can install `vendor-reset` immediately after explicit confirmation.
 - Improved apt-based `vendor-reset` remediation in `--detect`:
   - tries discovered apt package names (via `apt-cache search`) instead of only two fixed package names.
   - when no package is available, offers an explicit opt-in fallback to clone/build/install `vendor-reset` via DKMS from source.
+- Refined `vendor-reset` recommendation/install-offer gating:
+  - replaced static AMD family matching with evidence-based checks for reset-failure signatures in recent kernel logs.
+  - `--detect` now recommends/offers `vendor-reset` only when VFIO/AMD reset-failure markers are observed; otherwise AMD hosts are reported as `N/A`.
 - Added optional USB/xHCI stability kernel-parameter prompts in `vfio.sh` for:
   - GRUB path (`grub_add_kernel_params`)
   - openSUSE `/etc/kernel/cmdline` persistence path (`systemd_boot_add_kernel_params`)

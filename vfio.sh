@@ -123,7 +123,12 @@ accountsservice_is_present() {
   if have_cmd accounts-daemon; then
     return 0
   fi
-  [[ -f /usr/share/dbus-1/system-services/org.freedesktop.Accounts.service ]] && return 0
+  # Some systems may ship the DBus service file without an actual daemon
+  # backend; do not treat the DBus file alone as "installed".
+  local p
+  for p in /usr/lib/accounts-daemon /usr/libexec/accounts-daemon /lib/accounts-daemon /usr/sbin/accounts-daemon; do
+    [[ -x "$p" ]] && return 0
+  done
   [[ -f /usr/lib/systemd/system/accounts-daemon.service ]] && return 0
   [[ -f /lib/systemd/system/accounts-daemon.service ]] && return 0
   return 1
@@ -237,6 +242,48 @@ maybe_offer_detect_accountsservice_install() {
 host_has_amd_gpu() {
   have_cmd lspci || return 1
   lspci -n 2>/dev/null | grep -q '1002:'
+}
+recent_kernel_logs() {
+  # Print current + previous boot kernel logs when available.
+  if have_cmd journalctl; then
+    journalctl -k -b --no-pager 2>/dev/null || true
+    journalctl -k -b -1 --no-pager 2>/dev/null || true
+    return 0
+  fi
+  if have_cmd dmesg; then
+    dmesg 2>/dev/null || true
+    return 0
+  fi
+  return 1
+}
+
+amd_reset_issue_signatures_present() {
+  # Return 0 only when kernel logs show signatures consistent with
+  # VFIO/AMD reset failures. This avoids static GPU-family hardcoding.
+  local logs
+  logs="$(recent_kernel_logs || true)"
+  [[ -n "$logs" ]] || return 1
+
+  printf '%s\n' "$logs" \
+    | grep -Ei '(vfio-pci|amdgpu).*(reset|flr|d3)' \
+    | grep -Ei '(fail|failed|timeout|timed out|not ready|stuck|unable|can.t|error)' \
+    >/dev/null 2>&1
+}
+
+amd_reset_issue_signatures_present_for_bdf() {
+  # BDF-specific variant to scope reset-failure checks to the selected guest GPU.
+  local bdf="${1:-}"
+  [[ -n "$bdf" ]] || return 1
+  local logs slot
+  logs="$(recent_kernel_logs || true)"
+  [[ -n "$logs" ]] || return 1
+  slot="${bdf%.*}"
+
+  printf '%s\n' "$logs" \
+    | grep -Ei '(vfio-pci|amdgpu).*(reset|flr|d3)' \
+    | grep -Ei '(fail|failed|timeout|timed out|not ready|stuck|unable|can.t|error)' \
+    | grep -Ei "($bdf|$slot)" \
+    >/dev/null 2>&1
 }
 
 vendor_reset_is_present() {
@@ -361,12 +408,13 @@ install_vendor_reset_dkms_from_source() {
 maybe_offer_detect_vendor_reset_install() {
   [[ "${MODE:-}" == "detect" ]] || return 0
   host_has_amd_gpu || return 0
+  amd_reset_issue_signatures_present || return 0
   vendor_reset_is_present && return 0
 
   say
   hdr "Detect action (optional): vendor-reset"
-  note "AMD GPU detected and vendor-reset is missing."
-  note "Missing vendor-reset can cause GPU reset failures after VM shutdown/restart."
+  note "AMD reset-failure markers were detected in kernel logs and vendor-reset is missing."
+  note "Installing vendor-reset can help when VFIO GPU reset fails after VM shutdown/restart."
   if ! prompt_yn "Install vendor-reset now from detect mode?" N "AMD reset mitigation"; then
     return 0
   fi
@@ -1956,19 +2004,25 @@ detect_existing_vfio_report() {
     print_kv "vfio in dracut conf" "$(grep -RIn --no-messages -E 'vfio|vfio-pci|add_drivers|force_drivers' /etc/dracut.conf.d 2>/dev/null | head -n 20 | tr '\n' ' ' || true)"
   fi
 
-  # vendor-reset module (useful for AMD reset bugs)
+  # vendor-reset module (only recommended when reset-failure markers are seen)
   if [[ -d /sys/module/vendor_reset ]]; then
     if (( ENABLE_COLOR )); then
-      print_kv "vendor-reset" "${C_GREEN}Loaded (good for AMD reset bugs)${C_RESET}"
+      print_kv "vendor-reset" "${C_GREEN}Loaded${C_RESET}"
     else
-      print_kv "vendor-reset" "Loaded (good for AMD reset bugs)"
+      print_kv "vendor-reset" "Loaded"
     fi
   else
-    if command -v lspci >/dev/null 2>&1 && lspci -n | grep -q "1002:"; then
+    if host_has_amd_gpu && amd_reset_issue_signatures_present; then
       if (( ENABLE_COLOR )); then
-        print_kv "vendor-reset" "${C_YELLOW}MISSING (Recommended for AMD GPUs with reset issues)${C_RESET}"
+        print_kv "vendor-reset" "${C_YELLOW}MISSING (Recommended: reset-failure markers detected in logs)${C_RESET}"
       else
-        print_kv "vendor-reset" "MISSING (Recommended for AMD GPUs with reset issues)"
+        print_kv "vendor-reset" "MISSING (Recommended: reset-failure markers detected in logs)"
+      fi
+    elif host_has_amd_gpu; then
+      if (( ENABLE_COLOR )); then
+        print_kv "vendor-reset" "${C_DIM}N/A (No AMD reset-failure markers detected in recent logs)${C_RESET}"
+      else
+        print_kv "vendor-reset" "N/A (No AMD reset-failure markers detected in recent logs)"
       fi
     else
       print_kv "vendor-reset" "Not loaded"
@@ -5153,18 +5207,23 @@ user_selection() {
   if [[ "${CTX[guest_vendor],,}" == "1002" ]]; then
     say
     hdr "AMD Reset Bug Check"
-    if [[ -d /sys/module/vendor_reset ]]; then
-      say "OK: 'vendor-reset' module is loaded."
-      if ! grep -q "vendor-reset" "$MODULES_LOAD" 2>/dev/null; then
-        say "Adding vendor-reset to $MODULES_LOAD so it loads at boot..."
-        if (( ! DRY_RUN )); then
-          printf '%s\n' "vendor-reset" >>"$MODULES_LOAD"
+    if amd_reset_issue_signatures_present_for_bdf "${CTX[guest_gpu]}"; then
+      if [[ -d /sys/module/vendor_reset ]]; then
+        say "OK: 'vendor-reset' module is loaded."
+        if ! grep -q "vendor-reset" "$MODULES_LOAD" 2>/dev/null; then
+          say "Adding vendor-reset to $MODULES_LOAD so it loads at boot..."
+          if (( ! DRY_RUN )); then
+            printf '%s\n' "vendor-reset" >>"$MODULES_LOAD"
+          fi
         fi
+      else
+        say "${C_YELLOW}WARN: Reset-failure markers were detected for this AMD GPU, but 'vendor-reset' is not loaded.${C_RESET}"
+        note "This indicates a real reset issue path (FLR/D3/timeout) where vendor-reset may help."
+        note "Recommended: install the 'vendor-reset' kernel module (see vendor-reset project docs) after this script finishes."
       fi
     else
-      say "${C_YELLOW}WARN: AMD GPU selected but 'vendor-reset' module not found.${C_RESET}"
-      note "Many AMD cards (Polaris/Vega/Navi) cannot be reliably reused after VM shutdown without this module."
-      note "Recommended: install the 'vendor-reset' kernel module (see vendor-reset project docs) after this script finishes."
+      say "INFO: No reset-failure markers detected for the selected AMD GPU in recent kernel logs."
+      note "vendor-reset is not recommended by default unless reset failures are observed."
     fi
   fi
 
