@@ -4,6 +4,13 @@
 - openSUSE-specific code paths now trigger only when `ID` starts with `opensuse` or an `ID_LIKE` token starts with `opensuse`, reducing accidental matches on non-openSUSE systems.
 - Added explicit openSUSE gating diagnostics to `--detect`: the report now prints `openSUSE-like detection` with `yes/no` and the exact reason (`ID` or `ID_LIKE` token match).
 - Relaxed startup dependency checks for `--verify`: it no longer requires `modprobe`, allowing read-only verification to run in minimal environments.
+- Added LightDM boot-loop mitigation in `vfio.sh` install flow:
+  - New preflight detects when LightDM is present but `org.freedesktop.Accounts` (AccountsService) is missing.
+  - Offers automatic `accountsservice` installation via detected package manager.
+  - Adds optional fallback file `/etc/lightdm/lightdm.conf.d/90-vfio-greeter-fallback.conf` with `greeter-hide-users=true` if installation is unavailable.
+- Added `LightDM/AccountsService` status output to `--detect` and `--verify` reports so display-manager dependency health is visible before reboot.
+- In `--detect`, when LightDM is present and AccountsService is missing, added an interactive remediation offer that can install `accountsservice` immediately after explicit confirmation.
+- In `--detect`, when AMD GPUs are present and `vendor-reset` is missing, added an interactive remediation offer that can install `vendor-reset` immediately after explicit confirmation.
 - Added optional USB/xHCI stability kernel-parameter prompts in `vfio.sh` for:
   - GRUB path (`grub_add_kernel_params`)
   - openSUSE `/etc/kernel/cmdline` persistence path (`systemd_boot_add_kernel_params`)

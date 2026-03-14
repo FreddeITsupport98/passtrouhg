@@ -20,6 +20,11 @@ The script is designed to be **interactive, defensive and reversible**, so that 
 - This reduces the chance of non-openSUSE distributions accidentally entering openSUSE-specific paths.
 - Improved `--detect` output with a new `openSUSE-like detection` line that shows `yes/no` and the exact match reason (`ID` or `ID_LIKE` token), making distro-gating decisions transparent during troubleshooting.
 - Updated `--verify` mode startup checks so it no longer hard-requires `modprobe`; this keeps verification usable in minimal/read-only environments while still showing distro-gating diagnostics.
+- Added a LightDM dependency preflight in install flow: when LightDM is detected but `org.freedesktop.Accounts` is missing, the wizard now offers to install `accountsservice` automatically.
+- Added a LightDM fallback configuration path (`/etc/lightdm/lightdm.conf.d/90-vfio-greeter-fallback.conf`) to set `greeter-hide-users=true` when AccountsService install is unavailable, reducing restart-loop risk.
+- Added a `--detect`/`--verify` report signal `LightDM/AccountsService` that explicitly shows whether LightDM is detected and whether `org.freedesktop.Accounts` is available.
+- In `--detect`, when `LightDM/AccountsService` is WARN, the script now offers an interactive remediation action to install `accountsservice` immediately (with explicit confirmation).
+- In `--detect`, when AMD GPUs are detected and `vendor-reset` is missing, the script now offers an interactive remediation action to install `vendor-reset` immediately (with explicit confirmation).
 - Added a host VM internet precheck in `--detect` and `--verify` for libvirt/virt-manager NAT networking.
 - The precheck now warns when `net.ipv4.ip_forward=0` (common cause of guest DHCP-without-internet) and prints temporary and persistent fix steps.
 - Added a hint for missing `virbr0` with quick `virsh -c qemu:///system net-start/net-autostart default` guidance.
