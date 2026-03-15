@@ -20,6 +20,9 @@
 - Added a Boot-VGA safety guard to the generated `/usr/local/sbin/vfio-bind-selected-gpu.sh`:
   - if the selected guest GPU is currently marked `boot_vga=1`, the script now skips binding by default to prevent host display-manager lockups.
   - explicit override is available with `VFIO_ALLOW_BOOT_VGA=1` for intentional headless/advanced workflows.
+- Tightened Boot-VGA override behavior after black-screen regressions:
+  - host-GPU-assisted Boot-VGA binding now requires explicit opt-in via `VFIO_ALLOW_BOOT_VGA_IF_HOST_GPU=1`.
+  - default behavior remains safe skip for Boot-VGA guest devices unless explicitly overridden.
 - Updated boot-parameter generation to avoid forcing `vfio-pci.ids=...` when the selected guest GPU is currently Boot VGA on the host.
 - This reduces LightDM/Xorg startup failures caused by early vfio binding of the active host display adapter.
 - Hardened `is_opensuse_like()` distro detection in `vfio.sh` by parsing `/etc/os-release` key/value pairs directly.
