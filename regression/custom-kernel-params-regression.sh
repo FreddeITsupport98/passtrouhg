@@ -53,6 +53,34 @@ assert_not_contains_file() {
     printf 'PASS: %s\n' "$name"
   fi
 }
+assert_cmdline_has_token() {
+  local name="$1" token="$2" cmdline="$3"
+  local found=0 tok
+  for tok in $cmdline; do
+    if [[ "$tok" == "$token" ]]; then
+      found=1
+      break
+    fi
+  done
+  if (( found )); then
+    printf 'PASS: %s\n' "$name"
+  else
+    printf 'FAIL: %s (missing token: %s)\n' "$name" "$token" >&2
+    fail=1
+  fi
+}
+assert_cmdline_lacks_token() {
+  local name="$1" token="$2" cmdline="$3"
+  local tok
+  for tok in $cmdline; do
+    if [[ "$tok" == "$token" ]]; then
+      printf 'FAIL: %s (unexpected token present: %s)\n' "$name" "$token" >&2
+      fail=1
+      return
+    fi
+  done
+  printf 'PASS: %s\n' "$name"
+}
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -180,12 +208,286 @@ EOF
 
   PATH="$old_path"
 fi
+# Test 6: BLS sync keeps snapshot root metadata while applying persisted cmdline baseline.
+bls_dir="$tmp_dir/bls-entries"
+mkdir -p "$bls_dir"
+cmdline_fixture="$tmp_dir/kernel-cmdline"
+cat >"$cmdline_fixture" <<'EOF'
+quiet iommu=pt rd.driver.pre=vfio-pci selinux=0 apparmor=0
+EOF
 
-# Test 6: call-site wiring coverage for all boot-option flows.
+entry_a="$bls_dir/system-opensuse-a.conf"
+entry_b="$bls_dir/system-opensuse-b.conf"
+cat >"$entry_a" <<'EOF'
+title openSUSE entry A
+linux /vmlinuz-a
+initrd /initrd-a
+options splash=silent oldopt=1 root=UUID=ROOTA rootflags=subvol=@/.snapshots/40/snapshot rootfstype=btrfs resume=/dev/disk/by-uuid/SWAPA ro
+EOF
+cat >"$entry_b" <<'EOF'
+title openSUSE entry B
+linux /vmlinuz-b
+initrd /initrd-b
+options quiet legacy=1 root=UUID=ROOTB rootflags=subvol=@/.snapshots/38/snapshot rw
+EOF
+
+# shellcheck disable=SC2317
+is_opensuse_like() { return 0; }
+# shellcheck disable=SC2317
+detect_bootloader() { printf 'grub2-bls\n'; }
+# shellcheck disable=SC2317
+systemd_boot_entries_dir() { printf '%s\n' "$bls_dir"; }
+# shellcheck disable=SC2317
+kernel_cmdline_persistence_file() { printf '%s\n' "$cmdline_fixture"; }
+
+sync_bls_entries_from_kernel_cmdline >"$tmp_dir/bls-sync.stdout" 2>"$tmp_dir/bls-sync.stderr"
+
+opts_a="$(grep -m1 -E '^options[[:space:]]+' "$entry_a" | sed -E 's/^options[[:space:]]+//')"
+opts_b="$(grep -m1 -E '^options[[:space:]]+' "$entry_b" | sed -E 's/^options[[:space:]]+//')"
+
+assert_cmdline_has_token \
+  "BLS sync preserves entry A root token" \
+  "root=UUID=ROOTA" \
+  "$opts_a"
+assert_cmdline_has_token \
+  "BLS sync preserves entry A rootflags token" \
+  "rootflags=subvol=@/.snapshots/40/snapshot" \
+  "$opts_a"
+assert_cmdline_has_token \
+  "BLS sync preserves entry A rootfstype token" \
+  "rootfstype=btrfs" \
+  "$opts_a"
+assert_cmdline_has_token \
+  "BLS sync preserves entry A resume token" \
+  "resume=/dev/disk/by-uuid/SWAPA" \
+  "$opts_a"
+assert_cmdline_has_token \
+  "BLS sync preserves entry A ro token" \
+  "ro" \
+  "$opts_a"
+assert_cmdline_has_token \
+  "BLS sync applies baseline iommu=pt token to entry A" \
+  "iommu=pt" \
+  "$opts_a"
+assert_cmdline_has_token \
+  "BLS sync applies baseline rd.driver.pre token to entry A" \
+  "rd.driver.pre=vfio-pci" \
+  "$opts_a"
+assert_cmdline_lacks_token \
+  "BLS sync removes stale entry A token" \
+  "oldopt=1" \
+  "$opts_a"
+assert_cmdline_lacks_token \
+  "BLS sync removes stale entry A splash token" \
+  "splash=silent" \
+  "$opts_a"
+
+assert_cmdline_has_token \
+  "BLS sync preserves entry B root token" \
+  "root=UUID=ROOTB" \
+  "$opts_b"
+assert_cmdline_has_token \
+  "BLS sync preserves entry B rootflags token" \
+  "rootflags=subvol=@/.snapshots/38/snapshot" \
+  "$opts_b"
+assert_cmdline_has_token \
+  "BLS sync preserves entry B rw token" \
+  "rw" \
+  "$opts_b"
+assert_cmdline_has_token \
+  "BLS sync applies baseline selinux=0 token to entry B" \
+  "selinux=0" \
+  "$opts_b"
+assert_cmdline_has_token \
+  "BLS sync applies baseline apparmor=0 token to entry B" \
+  "apparmor=0" \
+  "$opts_b"
+assert_cmdline_lacks_token \
+  "BLS sync removes stale entry B token" \
+  "legacy=1" \
+  "$opts_b"
+# Test 7: sdbootutil failure still triggers direct BLS option synchronization fallback.
+fallback_bls_dir="$tmp_dir/bls-fallback-entries"
+mkdir -p "$fallback_bls_dir"
+fallback_cmdline_fixture="$tmp_dir/kernel-cmdline-fallback"
+cat >"$fallback_cmdline_fixture" <<'EOF'
+quiet iommu=pt rd.driver.pre=vfio-pci selinux=0 apparmor=0
+EOF
+
+fallback_entry="$fallback_bls_dir/system-opensuse-fallback.conf"
+cat >"$fallback_entry" <<'EOF'
+title openSUSE fallback entry
+linux /vmlinuz-fallback
+initrd /initrd-fallback
+options splash=silent legacy=1 root=UUID=ROOTF rootflags=subvol=@/.snapshots/52/snapshot rw
+EOF
+
+sdbootutil_shim_dir="$tmp_dir/sdbootutil-shim-bin"
+mkdir -p "$sdbootutil_shim_dir"
+sdbootutil_invocation_log="$tmp_dir/sdbootutil-invocations.log"
+cat >"$sdbootutil_shim_dir/sdbootutil" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$sdbootutil_invocation_log"
+exit 1
+EOF
+chmod +x "$sdbootutil_shim_dir/sdbootutil"
+
+old_path="$PATH"
+PATH="$sdbootutil_shim_dir:$PATH"
+
+# shellcheck disable=SC2317
+is_opensuse_like() { return 0; }
+# shellcheck disable=SC2317
+detect_bootloader() { printf 'grub2-bls\n'; }
+# shellcheck disable=SC2317
+systemd_boot_entries_dir() { printf '%s\n' "$fallback_bls_dir"; }
+# shellcheck disable=SC2317
+kernel_cmdline_persistence_file() { printf '%s\n' "$fallback_cmdline_fixture"; }
+
+opensuse_sdbootutil_update_all_entries >"$tmp_dir/bls-fallback-sync.stdout" 2>"$tmp_dir/bls-fallback-sync.stderr"
+
+PATH="$old_path"
+
+sdbootutil_log_contents="$(cat "$sdbootutil_invocation_log" 2>/dev/null || true)"
+assert_contains_text \
+  "fallback path attempts sdbootutil add-all-kernels before direct sync" \
+  "add-all-kernels" \
+  "$sdbootutil_log_contents"
+
+fallback_opts="$(grep -m1 -E '^options[[:space:]]+' "$fallback_entry" | sed -E 's/^options[[:space:]]+//')"
+assert_cmdline_has_token \
+  "sdbootutil failure fallback preserves root token" \
+  "root=UUID=ROOTF" \
+  "$fallback_opts"
+assert_cmdline_has_token \
+  "sdbootutil failure fallback preserves rootflags token" \
+  "rootflags=subvol=@/.snapshots/52/snapshot" \
+  "$fallback_opts"
+assert_cmdline_has_token \
+  "sdbootutil failure fallback preserves rw token" \
+  "rw" \
+  "$fallback_opts"
+assert_cmdline_has_token \
+  "sdbootutil failure fallback applies baseline rd.driver.pre token" \
+  "rd.driver.pre=vfio-pci" \
+  "$fallback_opts"
+assert_cmdline_lacks_token \
+  "sdbootutil failure fallback removes stale legacy token" \
+  "legacy=1" \
+  "$fallback_opts"
+assert_cmdline_lacks_token \
+  "sdbootutil failure fallback removes stale splash token" \
+  "splash=silent" \
+  "$fallback_opts"
+# Test 8: partial sdbootutil failure still triggers direct BLS option synchronization fallback.
+partial_bls_dir="$tmp_dir/bls-partial-fallback-entries"
+mkdir -p "$partial_bls_dir"
+partial_cmdline_fixture="$tmp_dir/kernel-cmdline-partial-fallback"
+cat >"$partial_cmdline_fixture" <<'EOF'
+quiet iommu=pt rd.driver.pre=vfio-pci selinux=0 apparmor=0
+EOF
+
+partial_entry="$partial_bls_dir/system-opensuse-partial-fallback.conf"
+cat >"$partial_entry" <<'EOF'
+title openSUSE partial fallback entry
+linux /vmlinuz-partial-fallback
+initrd /initrd-partial-fallback
+options splash=silent partiallegacy=1 root=UUID=ROOTP rootflags=subvol=@/.snapshots/61/snapshot rw
+EOF
+
+partial_sdbootutil_shim_dir="$tmp_dir/sdbootutil-partial-shim-bin"
+mkdir -p "$partial_sdbootutil_shim_dir"
+partial_sdbootutil_invocation_log="$tmp_dir/sdbootutil-partial-invocations.log"
+cat >"$partial_sdbootutil_shim_dir/sdbootutil" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$partial_sdbootutil_invocation_log"
+if [[ "\${1:-}" == "add-all-kernels" ]]; then
+  exit 0
+fi
+if [[ "\${1:-}" == "update-all-entries" ]]; then
+  exit 1
+fi
+exit 1
+EOF
+chmod +x "$partial_sdbootutil_shim_dir/sdbootutil"
+
+old_path="$PATH"
+PATH="$partial_sdbootutil_shim_dir:$PATH"
+
+# shellcheck disable=SC2317
+is_opensuse_like() { return 0; }
+# shellcheck disable=SC2317
+detect_bootloader() { printf 'grub2-bls\n'; }
+# shellcheck disable=SC2317
+systemd_boot_entries_dir() { printf '%s\n' "$partial_bls_dir"; }
+# shellcheck disable=SC2317
+kernel_cmdline_persistence_file() { printf '%s\n' "$partial_cmdline_fixture"; }
+
+opensuse_sdbootutil_update_all_entries >"$tmp_dir/bls-partial-fallback-sync.stdout" 2>"$tmp_dir/bls-partial-fallback-sync.stderr"
+
+PATH="$old_path"
+
+partial_sdbootutil_log_contents="$(cat "$partial_sdbootutil_invocation_log" 2>/dev/null || true)"
+assert_contains_text \
+  "partial fallback path invokes sdbootutil add-all-kernels" \
+  "add-all-kernels" \
+  "$partial_sdbootutil_log_contents"
+assert_contains_text \
+  "partial fallback path invokes sdbootutil update-all-entries" \
+  "update-all-entries" \
+  "$partial_sdbootutil_log_contents"
+
+partial_opts="$(grep -m1 -E '^options[[:space:]]+' "$partial_entry" | sed -E 's/^options[[:space:]]+//')"
+assert_cmdline_has_token \
+  "partial sdbootutil failure fallback preserves root token" \
+  "root=UUID=ROOTP" \
+  "$partial_opts"
+assert_cmdline_has_token \
+  "partial sdbootutil failure fallback preserves rootflags token" \
+  "rootflags=subvol=@/.snapshots/61/snapshot" \
+  "$partial_opts"
+assert_cmdline_has_token \
+  "partial sdbootutil failure fallback preserves rw token" \
+  "rw" \
+  "$partial_opts"
+assert_cmdline_has_token \
+  "partial sdbootutil failure fallback applies baseline rd.driver.pre token" \
+  "rd.driver.pre=vfio-pci" \
+  "$partial_opts"
+assert_cmdline_lacks_token \
+  "partial sdbootutil failure fallback removes stale partiallegacy token" \
+  "partiallegacy=1" \
+  "$partial_opts"
+assert_cmdline_lacks_token \
+  "partial sdbootutil failure fallback removes stale splash token" \
+  "splash=silent" \
+  "$partial_opts"
+
+# Test 9: call-site wiring coverage for all boot-option flows.
 # Test 5: call-site wiring coverage for all boot-option flows.
 assert_contains_file \
   "preview helper function exists" \
   "preview_cmdline_change_interactive()" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
+  "kernel cmdline persistence helper exists" \
+  "kernel_cmdline_persistence_file()" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
+  "BLS key-value token helper exists" \
+  "cmdline_get_key_value_token()" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
+  "BLS synchronization helper exists" \
+  "sync_bls_entries_from_kernel_cmdline()" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
+  "BLS synchronization helper reads kernel-cmdline path via helper" \
+  "cmdline_file=\"\$(kernel_cmdline_persistence_file 2>/dev/null || true)\"" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
+  "openSUSE sdbootutil helper calls BLS synchronization helper" \
+  "  sync_bls_entries_from_kernel_cmdline" \
   "$VFIO_SCRIPT"
 assert_contains_file \
   "openSUSE persistence flow calls preview helper" \

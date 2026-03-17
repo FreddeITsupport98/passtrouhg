@@ -3824,6 +3824,133 @@ systemd_boot_entries_dir() {
   return 1
 }
 
+kernel_cmdline_persistence_file() {
+  echo "/etc/kernel/cmdline"
+}
+# Extract the first key=value token for a given key from a kernel cmdline
+# string. Example:
+#   cmdline_get_key_value_token "quiet root=UUID=abcd rw" "root"
+#   -> root=UUID=abcd
+cmdline_get_key_value_token() {
+  local cmdline="$1" key="$2" tok
+  for tok in $cmdline; do
+    case "$tok" in
+      "${key}"=*)
+        printf '%s\n' "$tok"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+# Enforce that every Boot Loader Spec entry options line follows the current
+# /etc/kernel/cmdline baseline while preserving per-entry root metadata needed
+# for snapshot-aware boots.
+sync_bls_entries_from_kernel_cmdline() {
+  if ! is_opensuse_like; then
+    return 0
+  fi
+
+  local bl
+  bl="$(detect_bootloader 2>/dev/null || true)"
+  if [[ "$bl" != "grub2-bls" && "$bl" != "systemd-boot" ]]; then
+    return 0
+  fi
+
+  local cmdline_file
+  cmdline_file="$(kernel_cmdline_persistence_file 2>/dev/null || true)"
+  cmdline_file="$(trim "${cmdline_file:-}")"
+  if [[ -z "$cmdline_file" ]]; then
+    note "Skipping BLS entry sync: kernel cmdline persistence path is empty."
+    return 0
+  fi
+
+  if [[ ! -f "$cmdline_file" ]]; then
+    note "Skipping BLS entry sync: $cmdline_file is missing."
+    return 0
+  fi
+
+  local base_cmdline
+  base_cmdline="$(cat "$cmdline_file" 2>/dev/null || true)"
+  base_cmdline="$(trim "${base_cmdline:-}")"
+  if [[ -z "$base_cmdline" ]]; then
+    note "Skipping BLS entry sync: $cmdline_file is empty."
+    return 0
+  fi
+
+  local dir
+  dir="$(systemd_boot_entries_dir 2>/dev/null || true)"
+  if [[ -z "$dir" ]]; then
+    note "Skipping BLS entry sync: loader entries directory was not found."
+    return 0
+  fi
+
+  local -a entries=()
+  local f
+  shopt -s nullglob
+  for f in "$dir"/*.conf; do
+    entries+=("$f")
+  done
+  shopt -u nullglob
+
+  if (( ${#entries[@]} == 0 )); then
+    note "Skipping BLS entry sync: no *.conf entries found under $dir."
+    return 0
+  fi
+
+  local changed=0 examined=0
+  local current_opts merged_opts root_tok rootflags_tok rootfstype_tok resume_tok
+  for f in "${entries[@]}"; do
+    current_opts="$(grep -m1 -E '^options[[:space:]]+' "$f" 2>/dev/null | sed -E 's/^options[[:space:]]+//')"
+    current_opts="$(trim "${current_opts:-}")"
+    [[ -n "$current_opts" ]] || continue
+    (( examined += 1 ))
+
+    merged_opts="$base_cmdline"
+    root_tok="$(cmdline_get_key_value_token "$current_opts" "root" 2>/dev/null || true)"
+    rootflags_tok="$(cmdline_get_key_value_token "$current_opts" "rootflags" 2>/dev/null || true)"
+    rootfstype_tok="$(cmdline_get_key_value_token "$current_opts" "rootfstype" 2>/dev/null || true)"
+    resume_tok="$(cmdline_get_key_value_token "$current_opts" "resume" 2>/dev/null || true)"
+
+    [[ -n "$root_tok" ]] && merged_opts="$(add_param_once "$merged_opts" "$root_tok")"
+    [[ -n "$rootflags_tok" ]] && merged_opts="$(add_param_once "$merged_opts" "$rootflags_tok")"
+    [[ -n "$rootfstype_tok" ]] && merged_opts="$(add_param_once "$merged_opts" "$rootfstype_tok")"
+    [[ -n "$resume_tok" ]] && merged_opts="$(add_param_once "$merged_opts" "$resume_tok")"
+
+    if grep -Eq '(^|[[:space:]])ro([[:space:]]|$)' <<<"$current_opts"; then
+      merged_opts="$(add_param_once "$merged_opts" "ro")"
+    fi
+    if grep -Eq '(^|[[:space:]])rw([[:space:]]|$)' <<<"$current_opts"; then
+      merged_opts="$(add_param_once "$merged_opts" "rw")"
+    fi
+
+    merged_opts="$(trim "$merged_opts")"
+    if [[ "$merged_opts" == "$current_opts" ]]; then
+      continue
+    fi
+
+    systemd_boot_write_options "$f" "$merged_opts"
+    (( changed += 1 ))
+  done
+
+  if (( changed == 0 )); then
+    note "Boot Loader Spec options are already synchronized with /etc/kernel/cmdline (${examined} entries checked)."
+    return 0
+  fi
+
+  local entry_word="entries"
+  if (( changed == 1 )); then
+    entry_word="entry"
+  fi
+  if (( DRY_RUN )); then
+    say "DRY RUN: would synchronize ${changed} Boot Loader Spec ${entry_word} from $cmdline_file."
+  else
+    say "Synchronized ${changed} Boot Loader Spec ${entry_word} from $cmdline_file (preserved per-entry root/rootflags metadata)."
+  fi
+  return 0
+}
+
 # On openSUSE systems that use Boot Loader Spec (systemd-boot or grub2-bls),
 # kernel parameters are persisted via /etc/kernel/cmdline and propagated to
 # loader entries using sdbootutil. This helper wraps that propagation so we
@@ -3832,20 +3959,34 @@ opensuse_sdbootutil_update_all_entries() {
   if ! is_opensuse_like; then
     return 0
   fi
-  if ! have_cmd sdbootutil; then
+  local bl
+  bl="$(detect_bootloader 2>/dev/null || true)"
+  if [[ "$bl" != "grub2-bls" && "$bl" != "systemd-boot" ]]; then
     return 0
   fi
-  say "Updating Boot Loader Spec entries via: sdbootutil add-all-kernels && sdbootutil update-all-entries (errors will be ignored by this helper)"
-  # Call sdbootutil directly and silence its stdout/stderr to avoid leaking
-  # internal sed errors or similar implementation details to the user.
-  # We try add-all-kernels first (to ensure all installed kernels have
-  # BLS entries) and then update-all-entries to sync options/initrds.
-  # If either fails, we only emit a soft note instead of aborting.
-  if sdbootutil add-all-kernels >/dev/null 2>&1 && \
-     sdbootutil update-all-entries >/dev/null 2>&1; then
-    return 0
+
+  local sdbootutil_ok=0
+  if have_cmd sdbootutil; then
+    say "Updating Boot Loader Spec entries via: sdbootutil add-all-kernels && sdbootutil update-all-entries (errors will be ignored by this helper)"
+    # Call sdbootutil directly and silence its stdout/stderr to avoid leaking
+    # internal sed errors or similar implementation details to the user.
+    # We try add-all-kernels first (to ensure all installed kernels have
+    # BLS entries) and then update-all-entries to sync options/initrds.
+    if sdbootutil add-all-kernels >/dev/null 2>&1 && \
+       sdbootutil update-all-entries >/dev/null 2>&1; then
+      sdbootutil_ok=1
+    else
+      note "sdbootutil add-all-kernels/update-all-entries reported an error; falling back to direct BLS option synchronization from /etc/kernel/cmdline."
+    fi
+  else
+    note "sdbootutil is not available; applying direct BLS option synchronization from /etc/kernel/cmdline."
   fi
-  note "sdbootutil add-all-kernels/update-all-entries reported an error; BLS entries may still reference older parameters or initrds."
+
+  sync_bls_entries_from_kernel_cmdline
+
+  if (( sdbootutil_ok == 0 )); then
+    note "BLS entry option sync completed without a clean sdbootutil run; review entries if your setup relies on sdbootutil-managed boot artifacts."
+  fi
   return 0
 }
 

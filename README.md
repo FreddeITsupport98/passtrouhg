@@ -115,6 +115,21 @@ The script is designed to be **interactive, defensive and reversible**, so that 
 - Extended `regression/custom-kernel-params-regression.sh` with a runtime behavior check for `append_guest_vfio_ids_with_detect_fallback()`:
   - verifies add-first behavior appends `vfio-pci.ids=...` when no risk marker is present,
   - verifies risk-marker fallback removes `vfio-pci.ids=...` and sets `CTX[guest_vfio_ids_fallback]=1`.
+- Added deterministic openSUSE Boot Loader Spec option synchronization for `grub2-bls` and `systemd-boot`:
+  - `sync_bls_entries_from_kernel_cmdline()` now reapplies `/etc/kernel/cmdline` as the baseline across discovered BLS entries,
+  - preserves per-entry boot-critical metadata (`root=`, `rootflags=`, `rootfstype=`, `resume=`, and `ro`/`rw`) so snapshot-specific entries remain bootable.
+- Updated `opensuse_sdbootutil_update_all_entries()` to always follow sdbootutil runs with direct BLS option synchronization and to keep this synchronization path as a fallback when sdbootutil reports errors.
+- Extended `regression/custom-kernel-params-regression.sh` with additive wiring checks for the new BLS synchronization helper path.
+- Added `kernel_cmdline_persistence_file()` helper so the persisted cmdline source used by BLS synchronization is centralized and test-overridable.
+- Extended `regression/custom-kernel-params-regression.sh` with runtime BLS synchronization coverage using synthetic snapshot entries to verify:
+  - per-entry `root`, `rootflags`, `rootfstype`, `resume`, and `ro`/`rw` are preserved,
+  - stale entry-specific tokens are removed,
+  - persisted baseline tokens from the kernel-cmdline source are applied.
+- Extended `regression/custom-kernel-params-regression.sh` with a runtime `sdbootutil`-failure fallback test that:
+  - simulates failing `sdbootutil` calls,
+  - verifies `opensuse_sdbootutil_update_all_entries()` still applies direct BLS option synchronization fallback,
+  - verifies snapshot-specific root metadata remains preserved during fallback synchronization.
+- Extended `regression/custom-kernel-params-regression.sh` with an additional partial-failure fallback variant that simulates `sdbootutil add-all-kernels` success and `sdbootutil update-all-entries` failure, then verifies direct BLS synchronization fallback still updates options safely while preserving snapshot root metadata.
 - This protects host graphical boot (LightDM/Xorg) from early vfio takeover of the active display adapter while keeping an explicit advanced override path.
 - Tightened Boot-VGA runtime policy to be safe by default after real-world black-screen regressions:
   - automatic host-GPU-assisted Boot-VGA binding now requires explicit opt-in via `VFIO_ALLOW_BOOT_VGA_IF_HOST_GPU=1`.

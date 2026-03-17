@@ -96,6 +96,25 @@
 - Extended `regression/custom-kernel-params-regression.sh` with runtime Boot-VGA fallback behavior coverage for `append_guest_vfio_ids_with_detect_fallback()`:
   - validates add-first append behavior when risk markers are absent,
   - validates risk-triggered fallback removal of `vfio-pci.ids=...` and `CTX[guest_vfio_ids_fallback]=1` marker updates.
+- Added deterministic openSUSE Boot Loader Spec option synchronization for `grub2-bls` and `systemd-boot`:
+  - new helper `sync_bls_entries_from_kernel_cmdline()` now enforces `/etc/kernel/cmdline` as the baseline across discovered BLS entries,
+  - per-entry boot-critical metadata is preserved (`root=`, `rootflags=`, `rootfstype=`, `resume=`, and `ro`/`rw` tokens) to keep snapshot-specific entries bootable.
+- Improved `opensuse_sdbootutil_update_all_entries()` behavior:
+  - now runs direct BLS option synchronization after sdbootutil runs,
+  - falls back to direct synchronization when `sdbootutil add-all-kernels` / `update-all-entries` reports errors.
+- Extended `regression/custom-kernel-params-regression.sh` call-site wiring checks for the new BLS synchronization helpers.
+- Added `kernel_cmdline_persistence_file()` helper to centralize the persisted kernel-cmdline path used by BLS synchronization logic.
+- Extended `regression/custom-kernel-params-regression.sh` with runtime BLS synchronization coverage that:
+  - creates synthetic BLS entries with snapshot-specific `rootflags=...`,
+  - verifies synchronization preserves per-entry `root` / `rootflags` / `rootfstype` / `resume` and `ro`/`rw`,
+  - verifies stale per-entry options are removed while persisted baseline tokens are applied.
+- Extended `regression/custom-kernel-params-regression.sh` with runtime fallback coverage for `opensuse_sdbootutil_update_all_entries()`:
+  - simulates `sdbootutil` command failure via a shim,
+  - verifies direct BLS option synchronization fallback still applies persisted kernel-cmdline tokens,
+  - verifies per-entry snapshot root metadata remains preserved during fallback synchronization.
+- Extended `regression/custom-kernel-params-regression.sh` with an additional partial-failure fallback case for `opensuse_sdbootutil_update_all_entries()`:
+  - simulates `sdbootutil add-all-kernels` success followed by `sdbootutil update-all-entries` failure,
+  - verifies direct BLS option synchronization fallback still executes and preserves snapshot root metadata while applying persisted baseline options.
 - Hardened `is_opensuse_like()` distro detection in `vfio.sh` by parsing `/etc/os-release` key/value pairs directly.
 - openSUSE-specific code paths now trigger only when `ID` starts with `opensuse` or an `ID_LIKE` token starts with `opensuse`, reducing accidental matches on non-openSUSE systems.
 - Added explicit openSUSE gating diagnostics to `--detect`: the report now prints `openSUSE-like detection` with `yes/no` and the exact reason (`ID` or `ID_LIKE` token match).
