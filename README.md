@@ -16,6 +16,23 @@ The script is designed to be **interactive, defensive and reversible**, so that 
 > **Important:** This script does *not* create or modify VMs. It only prepares your host so that a hypervisor (libvirt/qemu, etc.) can passthrough the selected PCI devices.
 
 ## Unreleased
+- Added optional custom kernel-parameter prompts in install boot-option flows:
+  - classic GRUB cmdline updates,
+  - systemd-boot current-entry updates,
+  - openSUSE `/etc/kernel/cmdline` persistence updates.
+- Added explicit X11 mention in the custom-parameter prompt guidance for passthrough tuning.
+- Custom parameters are entered as space-separated tokens and appended additively (deduplicated with existing cmdline options).
+- Hardened `add_custom_kernel_params_interactive()` command-substitution behavior so prompt/UI text is redirected away from stdout and only the final cmdline value is returned to callers.
+- Added optional preview-before-apply confirmation for proposed kernel cmdline changes in install flows:
+  - GRUB cmdline updates,
+  - systemd-boot current-entry updates,
+  - openSUSE `/etc/kernel/cmdline` persistence updates.
+- Added `regression/custom-kernel-params-regression.sh` with additive coverage for:
+  - token dedup behavior (`add_param_once`),
+  - no-change return path when custom-parameter prompt is declined,
+  - helper UI redirection checks to prevent stdout contamination,
+  - GRUB/systemd-boot/openSUSE persistence call-site wiring,
+  - preview-helper behavior and preview call-site wiring in all boot-option paths.
 - Added GitHub Actions CI regression automation:
   - new workflow at `.github/workflows/regression.yml`,
   - runs on both `push` and `pull_request`,

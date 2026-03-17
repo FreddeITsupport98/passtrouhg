@@ -3537,6 +3537,70 @@ remove_param_all() {
   done
   trim "$out"
 }
+preview_cmdline_change_interactive() {
+  # preview_cmdline_change_interactive "<current_cmdline>" "<updated_cmdline>" "<target_label>"
+  local current="$1"
+  local updated="$2"
+  local target="$3"
+  local current_trim updated_trim
+  current_trim="$(trim "${current:-}")"
+  updated_trim="$(trim "${updated:-}")"
+  [[ "$current_trim" != "$updated_trim" ]] || return 0
+
+  say
+  hdr "Preview ${target} update"
+  note "Current ${target}:"
+  say "  ${current_trim:-<empty>}"
+  note "Proposed ${target}:"
+  say "  ${updated_trim:-<empty>}"
+  if prompt_yn "Apply this ${target} update?" Y "Boot options preview"; then
+    return 0
+  fi
+  note "Skipped ${target} update by user choice."
+  return 1
+}
+add_custom_kernel_params_interactive() {
+  # add_custom_kernel_params_interactive "<current_cmdline>" "<target_label>"
+  local current="$1"
+  local target="$2"
+  local updated="$current"
+  local in out extra tok
+  in="/dev/stdin"
+  out="/dev/stderr"
+  if [[ -r /dev/tty && -w /dev/tty ]]; then
+    in="/dev/tty"
+    out="/dev/tty"
+  fi
+
+  # IMPORTANT: this helper is used in command substitution. Keep all UI text
+  # off stdout so only the final updated cmdline is returned to the caller.
+  printf '\n' >"$out"
+  hdr "Custom kernel parameters (optional)" >"$out"
+  note "You can append extra kernel parameter(s) for ${target}." >"$out"
+  note "This can be useful for distro-specific or X11-specific passthrough tweaks." >"$out"
+  note "Leave blank to keep defaults." >"$out"
+
+  if ! prompt_yn "Add custom kernel parameter(s) to ${target} now?" N "Boot options (custom)"; then
+    printf '%s\n' "$updated"
+    return 0
+  fi
+
+  printf '%s' "Enter extra kernel parameter(s), space-separated: " >"$out"
+  read -r extra <"$in" || extra=""
+  extra="$(trim "${extra:-}")"
+  if [[ -z "$extra" ]]; then
+    note "No custom kernel parameters entered." >"$out"
+    printf '%s\n' "$updated"
+    return 0
+  fi
+
+  for tok in $extra; do
+    updated="$(add_param_once "$updated" "$tok")"
+  done
+  note "Added custom kernel parameter(s): $extra" >"$out"
+  printf '%s\n' "$updated"
+  return 0
+}
 
 # Return 0 if the running kernel looks like an openSUSE default kernel
 # ("*-default") with a version at or above a given threshold. This is used
@@ -3938,21 +4002,24 @@ systemd_boot_add_kernel_params() {
     if prompt_yn "Enable ACS override in /etc/kernel/cmdline (persistence)?" N "Boot options (persistence)"; then
       new_cmdline="$(add_param_once "$new_cmdline" "pcie_acs_override=downstream,multifunction")"
     fi
+    new_cmdline="$(add_custom_kernel_params_interactive "$new_cmdline" "/etc/kernel/cmdline (persistence)")"
 
     if [[ "$(trim "$new_cmdline")" != "$(trim "$cmdline_content")" ]]; then
-      backup_file "/etc/kernel/cmdline"
-      if (( DRY_RUN )); then
-        : # do nothing in dry-run
-      else
-        printf '%s
+      if preview_cmdline_change_interactive "$cmdline_content" "$new_cmdline" "/etc/kernel/cmdline (persistence)"; then
+        backup_file "/etc/kernel/cmdline"
+        if (( DRY_RUN )); then
+          : # do nothing in dry-run
+        else
+          printf '%s
 ' "$new_cmdline" > /etc/kernel/cmdline
+        fi
+        say "Updated /etc/kernel/cmdline for persistence."
+        # NOTE: We defer sdbootutil add-all-kernels/update-all-entries
+        # until AFTER a successful initramfs rebuild at the end of
+        # apply_configuration() to avoid a window where the bootloader
+        # demands rd.driver.pre= without the driver being present in the
+        # initramfs.
       fi
-      say "Updated /etc/kernel/cmdline for persistence."
-      # NOTE: We defer sdbootutil add-all-kernels/update-all-entries
-      # until AFTER a successful initramfs rebuild at the end of
-      # apply_configuration() to avoid a window where the bootloader
-      # demands rd.driver.pre= without the driver being present in the
-      # initramfs.
     else
       say "/etc/kernel/cmdline already contains VFIO/IOMMU params."
     fi
@@ -4090,9 +4157,13 @@ systemd_boot_add_kernel_params() {
   if prompt_yn "Enable ACS override (pcie_acs_override=downstream,multifunction) in this entry?" N "Boot options (systemd-boot)"; then
     new_opts="$(add_param_once "$new_opts" "pcie_acs_override=downstream,multifunction")"
   fi
+  new_opts="$(add_custom_kernel_params_interactive "$new_opts" "systemd-boot entry")"
 
   if [[ "$(trim "$new_opts")" == "$(trim "$current_opts")" ]]; then
     say "systemd-boot entry options unchanged (params already present)."
+    return 0
+  fi
+  if ! preview_cmdline_change_interactive "$current_opts" "$new_opts" "systemd-boot entry options"; then
     return 0
   fi
 
@@ -4288,41 +4359,50 @@ grub_add_kernel_params() {
   elif command -v dracut >/dev/null 2>&1; then
     note "Skipping rd.driver.pre=vfio-pci because vfio-pci module is not available for this kernel."
   fi
+  new="$(add_custom_kernel_params_interactive "$new" "GRUB cmdline")"
 
   # Safety: do not silently rewrite if nothing changed.
+  local grub_cmdline_changed=0
   if [[ "$(trim "$new")" == "$(trim "$current")" ]]; then
     say "GRUB cmdline unchanged (params already present)."
   else
-    grub_write_cmdline_in_place "$key" "$(trim "$new")"
+    if preview_cmdline_change_interactive "$current" "$new" "GRUB kernel cmdline"; then
+      grub_write_cmdline_in_place "$key" "$(trim "$new")"
+      grub_cmdline_changed=1
+    fi
   fi
 
-  if command -v update-grub >/dev/null 2>&1; then
-    say "Updating GRUB config via update-grub..."
-    run update-grub
-  elif command -v grub-mkconfig >/dev/null 2>&1; then
-    local out
-    if [[ -d /boot/grub ]]; then
-      out=/boot/grub/grub.cfg
-    elif [[ -d /boot/grub2 ]]; then
-      out=/boot/grub2/grub.cfg
+  if (( grub_cmdline_changed )); then
+    if command -v update-grub >/dev/null 2>&1; then
+      say "Updating GRUB config via update-grub..."
+      run update-grub
+    elif command -v grub-mkconfig >/dev/null 2>&1; then
+      local out
+      if [[ -d /boot/grub ]]; then
+        out=/boot/grub/grub.cfg
+      elif [[ -d /boot/grub2 ]]; then
+        out=/boot/grub2/grub.cfg
+      else
+        die "Could not determine grub.cfg output path (no /boot/grub or /boot/grub2)"
+      fi
+      say "Updating GRUB config via grub-mkconfig -o $out ..."
+      run grub-mkconfig -o "$out"
+    elif command -v grub2-mkconfig >/dev/null 2>&1; then
+      local out
+      if [[ -d /boot/grub2 ]]; then
+        out=/boot/grub2/grub.cfg
+      elif [[ -d /boot/grub ]]; then
+        out=/boot/grub/grub.cfg
+      else
+        die "Could not determine grub.cfg output path (no /boot/grub2 or /boot/grub)"
+      fi
+      say "Updating GRUB config via grub2-mkconfig -o $out ..."
+      run grub2-mkconfig -o "$out"
     else
-      die "Could not determine grub.cfg output path (no /boot/grub or /boot/grub2)"
+      die "No supported GRUB update command found (tried update-grub, grub-mkconfig, grub2-mkconfig)"
     fi
-    say "Updating GRUB config via grub-mkconfig -o $out ..."
-    run grub-mkconfig -o "$out"
-  elif command -v grub2-mkconfig >/dev/null 2>&1; then
-    local out
-    if [[ -d /boot/grub2 ]]; then
-      out=/boot/grub2/grub.cfg
-    elif [[ -d /boot/grub ]]; then
-      out=/boot/grub/grub.cfg
-    else
-      die "Could not determine grub.cfg output path (no /boot/grub2 or /boot/grub)"
-    fi
-    say "Updating GRUB config via grub2-mkconfig -o $out ..."
-    run grub2-mkconfig -o "$out"
   else
-    die "No supported GRUB update command found (tried update-grub, grub-mkconfig, grub2-mkconfig)"
+    note "Skipping GRUB config regeneration because kernel cmdline was not changed."
   fi
 }
 

@@ -1,5 +1,22 @@
 # Changelog
 ## Unreleased
+- Added optional custom kernel-parameter prompts during install boot-option flows for:
+  - GRUB kernel cmdline updates,
+  - systemd-boot current-entry updates,
+  - openSUSE `/etc/kernel/cmdline` persistence updates.
+- Prompt guidance now explicitly mentions X11 passthrough-tuning use cases for custom parameters.
+- Custom parameters are appended additively as space-separated tokens with existing-option deduplication.
+- Hardened `add_custom_kernel_params_interactive()` so command-substitution callers receive only the final cmdline on stdout while prompt/UI text is redirected away from stdout.
+- Added optional preview-before-apply confirmation for proposed kernel cmdline updates across install boot-option paths:
+  - GRUB cmdline updates,
+  - systemd-boot current-entry updates,
+  - openSUSE `/etc/kernel/cmdline` persistence updates.
+- Added `regression/custom-kernel-params-regression.sh` with additive coverage for:
+  - dedup token behavior via `add_param_once`,
+  - no-change behavior when custom-parameter prompt is declined,
+  - helper UI redirection checks guarding against stdout contamination,
+  - GRUB/systemd-boot/openSUSE persistence call-site wiring,
+  - preview-helper behavior and preview call-site wiring for all boot-option update paths.
 - Added GitHub Actions CI workflow `.github/workflows/regression.yml` to run `regression/script.sh` automatically on both `push` and `pull_request`.
 - Improved `regression/script.sh` to auto-discover all `regression/*-regression.sh` scripts, run syntax checks for discovered regression scripts, and execute each regression script automatically in sorted order.
 - Improved `regression/script.sh` master-entrypoint coverage:
