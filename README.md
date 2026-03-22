@@ -36,6 +36,17 @@ The script is designed to be **interactive, defensive and reversible**, so that 
   - `regression/completion-output-regression.sh` now also asserts `--help` includes `--print-fish-completion`, `--print-bash-completion`, and `--print-zsh-completion`.
 - Improved completion regression maintainability:
   - `regression/completion-output-regression.sh` now parses long options from `vfio.sh --help` and dynamically verifies fish/bash/zsh completion outputs cover that derived option set.
+- Improved USB Bluetooth exclusion picker readability:
+  - Bluetooth hint labels are now colorized when ANSI color output is enabled (while preserving plain-text fallback).
+- Improved USB Bluetooth exclusion safety hints:
+  - exclusion picker now adds distinct colored keep-bound hints for Ethernet and Printer USB devices so users can avoid unbinding host-critical peripherals.
+- Added USB storage danger warnings in exclusion picker:
+  - storage-class devices are now marked with a distinct red `[danger: Storage]` label,
+  - picker guidance now explicitly recommends excluding all storage-marked entries from unbind.
+- Added final storage-risk interlock in exclusion picker:
+  - if any storage-marked USB IDs are left out of `EXCLUDE_IDS`, the picker now shows an explicit danger summary and requires either:
+    - re-entering exclusions to include them, or
+    - typing the confirmation phrase `I ACCEPT STORAGE RISK` to proceed anyway.
 
 ---
 
@@ -300,6 +311,7 @@ The script supports several modes controlled by flags. By default, without any f
 - `--install-usb-bt-mitigation`
   - Installs only the optional USB Bluetooth mitigation (`vfio-usb-bluetooth` helper + systemd + udev + match-policy config).
   - During install, the wizard can show a numbered USB list and let you set `EXCLUDE_IDS` interactively, including Bluetooth detection hints.
+  - If storage-marked entries are not excluded, the picker adds a final danger confirmation step before allowing install flow to continue.
 
 - `--print-fish-completion`
   - Prints fish completions to stdout without installing files.

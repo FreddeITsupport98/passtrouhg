@@ -12,6 +12,19 @@
 - Improved `regression/completion-output-regression.sh` option coverage checks:
   - now derives long-option expectations dynamically from `vfio.sh --help`,
   - verifies fish/bash/zsh completion outputs cover that parsed help-option set, reducing maintenance when new flags are added.
+- Improved USB Bluetooth mitigation exclusion UX:
+  - `configure_usb_bt_exclude_ids_interactive()` now colorizes `[hint: Bluetooth detected]` labels when color output is enabled while keeping plain-text fallback behavior unchanged.
+- Extended USB Bluetooth mitigation exclusion hints:
+  - picker now marks detected Ethernet and Printer USB devices with distinct colored keep-bound hints to reduce accidental unbind selections.
+  - picker guidance now explicitly clarifies that exclusion selections keep devices bound on the host (`EXCLUDE_IDS`).
+- Added USB storage danger classification in exclusion picker:
+  - picker now detects storage-class USB devices and marks them with a red `[danger: Storage]` label.
+  - guidance now explicitly warns that unbinding these can disconnect active host storage and recommends excluding all storage-marked entries.
+- Improved exclusion prompt clarity:
+  - selection prompt now explicitly says numbers are excluded from unbind (`EXCLUDE from unbind`).
+- Added storage omission confirmation interlock in exclusion picker:
+  - when any storage-marked USB IDs are not selected for `EXCLUDE_IDS`, picker now shows an explicit danger summary,
+  - user must either re-enter exclusions or type `I ACCEPT STORAGE RISK` to continue.
 - Improved optional USB Bluetooth mitigation install flow:
   - added interactive numbered USB device listing for `EXCLUDE_IDS` selection,
   - added helper hints that label entries where Bluetooth interfaces are detected.

@@ -5425,6 +5425,94 @@ usb_sysfs_device_is_bluetooth() {
   shopt -u nullglob
   return 1
 }
+usb_sysfs_device_is_ethernet() {
+  # Return 0 if the USB device appears to be a network adapter (Ethernet/LAN).
+  local dev="$1" intf cls drv text_hint
+  shopt -s nullglob
+  for intf in "$dev":*; do
+    if [[ -L "$intf/driver" ]]; then
+      drv="$(basename "$(readlink -f "$intf/driver" 2>/dev/null || true)")"
+      case "$drv" in
+        r8152|asix|ax88179_178a|cdc_ether|rndis_host|cdc_ncm|cdc_mbim|lan78xx|smsc95xx|qmi_wwan|aqc111)
+          shopt -u nullglob
+          return 0
+          ;;
+      esac
+    fi
+    if [[ -f "$intf/bInterfaceClass" ]]; then
+      cls="$(tr -d '\n' <"$intf/bInterfaceClass" | tr 'A-F' 'a-f')"
+      if [[ "$cls" == "02" || "$cls" == "0a" ]]; then
+        shopt -u nullglob
+        return 0
+      fi
+    fi
+  done
+  shopt -u nullglob
+
+  text_hint="$(printf '%s %s' "$(cat "$dev/manufacturer" 2>/dev/null || true)" "$(cat "$dev/product" 2>/dev/null || true)" | tr '[:upper:]' '[:lower:]')"
+  if grep -Eq '(ethernet|usb ?lan|network adapter|realtek.*lan|gigabit.*lan)' <<<"$text_hint"; then
+    return 0
+  fi
+  return 1
+}
+usb_sysfs_device_is_printer() {
+  # Return 0 if the USB device appears to be a printer.
+  local dev="$1" intf cls drv text_hint
+  shopt -s nullglob
+  for intf in "$dev":*; do
+    if [[ -L "$intf/driver" ]]; then
+      drv="$(basename "$(readlink -f "$intf/driver" 2>/dev/null || true)")"
+      if [[ "$drv" == "usblp" ]]; then
+        shopt -u nullglob
+        return 0
+      fi
+    fi
+    if [[ -f "$intf/bInterfaceClass" ]]; then
+      cls="$(tr -d '\n' <"$intf/bInterfaceClass" | tr 'A-F' 'a-f')"
+      if [[ "$cls" == "07" ]]; then
+        shopt -u nullglob
+        return 0
+      fi
+    fi
+  done
+  shopt -u nullglob
+
+  text_hint="$(printf '%s %s' "$(cat "$dev/manufacturer" 2>/dev/null || true)" "$(cat "$dev/product" 2>/dev/null || true)" | tr '[:upper:]' '[:lower:]')"
+  if grep -Eq '(printer|print device)' <<<"$text_hint"; then
+    return 0
+  fi
+  return 1
+}
+usb_sysfs_device_is_storage() {
+  # Return 0 if the USB device appears to be storage (mass storage/SSD/HDD).
+  local dev="$1" intf cls drv text_hint
+  shopt -s nullglob
+  for intf in "$dev":*; do
+    if [[ -L "$intf/driver" ]]; then
+      drv="$(basename "$(readlink -f "$intf/driver" 2>/dev/null || true)")"
+      case "$drv" in
+        usb-storage|uas)
+          shopt -u nullglob
+          return 0
+          ;;
+      esac
+    fi
+    if [[ -f "$intf/bInterfaceClass" ]]; then
+      cls="$(tr -d '\n' <"$intf/bInterfaceClass" | tr 'A-F' 'a-f')"
+      if [[ "$cls" == "08" ]]; then
+        shopt -u nullglob
+        return 0
+      fi
+    fi
+  done
+  shopt -u nullglob
+
+  text_hint="$(printf '%s %s' "$(cat "$dev/manufacturer" 2>/dev/null || true)" "$(cat "$dev/product" 2>/dev/null || true)" | tr '[:upper:]' '[:lower:]')"
+  if grep -Eq '(portable ssd|ssd|hdd|hard ?drive|mass storage|flash drive|thumb drive|external drive|usb disk|portable disk)' <<<"$text_hint"; then
+    return 0
+  fi
+  return 1
+}
 
 configure_usb_bt_exclude_ids_interactive() {
   # Build a numbered USB device list and let the user choose EXCLUDE_IDS.
@@ -5435,7 +5523,31 @@ configure_usb_bt_exclude_ids_interactive() {
 
   local -a ids=()
   local -a labels=()
+  local -a storage_ids_order=()
+  local -A storage_id_to_label=()
   local dev name vid pid manufacturer product hint line
+  local bt_hint_plain bt_hint_colored bt_hint_note
+  local eth_hint_plain eth_hint_colored eth_hint_note
+  local prn_hint_plain prn_hint_colored prn_hint_note
+  local stg_hint_plain stg_hint_colored stg_hint_note
+  bt_hint_plain="[hint: Bluetooth detected]"
+  bt_hint_colored="[hint: ${C_BOLD}${C_YELLOW}Bluetooth detected${C_RESET}]"
+  bt_hint_note="$bt_hint_plain"
+  eth_hint_plain="[keep-bound: Ethernet]"
+  eth_hint_colored="[keep-bound: ${C_BOLD}${C_GREEN}Ethernet${C_RESET}]"
+  eth_hint_note="$eth_hint_plain"
+  prn_hint_plain="[keep-bound: Printer]"
+  prn_hint_colored="[keep-bound: ${C_BOLD}${C_BLUE}Printer${C_RESET}]"
+  prn_hint_note="$prn_hint_plain"
+  stg_hint_plain="[danger: Storage]"
+  stg_hint_colored="[danger: ${C_BOLD}${C_RED}Storage${C_RESET}]"
+  stg_hint_note="$stg_hint_plain"
+  if (( ENABLE_COLOR )); then
+    bt_hint_note="$bt_hint_colored"
+    eth_hint_note="$eth_hint_colored"
+    prn_hint_note="$prn_hint_colored"
+    stg_hint_note="$stg_hint_colored"
+  fi
 
   for dev in /sys/bus/usb/devices/*; do
     [[ -f "$dev/idVendor" && -f "$dev/idProduct" ]] || continue
@@ -5451,7 +5563,36 @@ configure_usb_bt_exclude_ids_interactive() {
     product="$(cat "$dev/product" 2>/dev/null || true)"
     hint=""
     if usb_sysfs_device_is_bluetooth "$dev"; then
-      hint=" [hint: Bluetooth detected]"
+      if (( ENABLE_COLOR )); then
+        hint+=" $bt_hint_colored"
+      else
+        hint+=" $bt_hint_plain"
+      fi
+    fi
+    if usb_sysfs_device_is_ethernet "$dev"; then
+      if (( ENABLE_COLOR )); then
+        hint+=" $eth_hint_colored"
+      else
+        hint+=" $eth_hint_plain"
+      fi
+    fi
+    if usb_sysfs_device_is_printer "$dev"; then
+      if (( ENABLE_COLOR )); then
+        hint+=" $prn_hint_colored"
+      else
+        hint+=" $prn_hint_plain"
+      fi
+    fi
+    if usb_sysfs_device_is_storage "$dev"; then
+      if (( ENABLE_COLOR )); then
+        hint+=" $stg_hint_colored"
+      else
+        hint+=" $stg_hint_plain"
+      fi
+      if [[ -z "${storage_id_to_label[$vid:$pid]:-}" ]]; then
+        storage_ids_order+=("$vid:$pid")
+        storage_id_to_label["$vid:$pid"]="$(trim "$name $vid:$pid $manufacturer $product")"
+      fi
     fi
 
     line="$name $vid:$pid $manufacturer $product"
@@ -5469,7 +5610,11 @@ configure_usb_bt_exclude_ids_interactive() {
   say
   hdr "USB Bluetooth mitigation exclusions"
   note "Choose USB devices to exclude from automatic host-side Bluetooth detach."
-  note "Entries marked '[hint: Bluetooth detected]' are likely Bluetooth adapters."
+  note "Entries marked '$bt_hint_note' are likely Bluetooth adapters."
+  note "Entries marked '$eth_hint_note' or '$prn_hint_note' are usually host devices to keep bound (do NOT unbind)."
+  note "Entries marked '$stg_hint_note' are high-risk to unbind (can disconnect active host storage)."
+  note "Recommended: include ALL '$stg_hint_note' entries in your exclusion selection."
+  note "Selecting a number here means EXCLUDE from unbind (keep bound on host)."
   note "Selection is saved as EXCLUDE_IDS in: $USB_BT_MATCH_CONF"
 
   local i
@@ -5483,32 +5628,67 @@ configure_usb_bt_exclude_ids_interactive() {
     out="/dev/tty"
   fi
 
-  printf '%s' "Enter numbers to exclude (comma/space separated, ENTER for none): " >"$out"
-  read -r answer <"$in" || answer=""
-  answer="$(trim "$answer")"
-
   local exclude_csv=""
-  if [[ -n "$answer" ]]; then
-    answer="${answer//,/ }"
+  while true; do
+    printf '%s' "Enter numbers to EXCLUDE from unbind (comma/space separated, ENTER for none): " >"$out"
+    read -r answer <"$in" || answer=""
+    answer="$(trim "$answer")"
+
+    exclude_csv=""
     local -A seen_ids=()
-    local token idx id
-    for token in $answer; do
-      if [[ ! "$token" =~ ^[0-9]+$ ]]; then
-        note "Ignoring invalid token: $token"
-        continue
-      fi
-      if (( token < 1 || token > ${#ids[@]} )); then
-        note "Ignoring out-of-range selection: $token"
-        continue
-      fi
-      idx=$((token-1))
-      id="${ids[$idx]}"
-      if [[ -z "${seen_ids[$id]:-}" ]]; then
-        exclude_csv+="${exclude_csv:+,}$id"
-        seen_ids[$id]=1
+    if [[ -n "$answer" ]]; then
+      answer="${answer//,/ }"
+      local token idx id
+      for token in $answer; do
+        if [[ ! "$token" =~ ^[0-9]+$ ]]; then
+          note "Ignoring invalid token: $token"
+          continue
+        fi
+        if (( token < 1 || token > ${#ids[@]} )); then
+          note "Ignoring out-of-range selection: $token"
+          continue
+        fi
+        idx=$((token-1))
+        id="${ids[$idx]}"
+        if [[ -z "${seen_ids[$id]:-}" ]]; then
+          exclude_csv+="${exclude_csv:+,}$id"
+          seen_ids[$id]=1
+        fi
+      done
+    fi
+
+    local -a missing_storage_ids=()
+    local sid
+    for sid in "${storage_ids_order[@]}"; do
+      if [[ -z "${seen_ids[$sid]:-}" ]]; then
+        missing_storage_ids+=("$sid")
       fi
     done
-  fi
+
+    if (( ${#missing_storage_ids[@]} == 0 )); then
+      break
+    fi
+
+    say
+    if (( ENABLE_COLOR )); then
+      say "${C_BOLD}${C_RED}DANGER:${C_RESET} Some storage devices are NOT excluded from unbind."
+    else
+      say "DANGER: Some storage devices are NOT excluded from unbind."
+    fi
+    note "Unbinding storage-class USB devices can disconnect active host disks and cause data loss."
+    note "Storage entries currently not excluded:"
+    for sid in "${missing_storage_ids[@]}"; do
+      note "  - ${storage_id_to_label[$sid]}"
+    done
+
+    if prompt_yn "Re-enter exclusion numbers now to include these storage devices?" Y "Storage safety"; then
+      continue
+    fi
+    if confirm_phrase "Proceeding without excluding all storage devices is risky." "I ACCEPT STORAGE RISK"; then
+      break
+    fi
+    note "Risk confirmation not accepted; please choose exclusions again."
+  done
 
   local tmp mode owner group
   tmp="$(mktemp)"
