@@ -55,6 +55,19 @@ The script is designed to be **interactive, defensive and reversible**, so that 
 - Added non-default test hooks for deterministic USB exclusion regression execution:
   - `VFIO_USB_SYSFS_GLOB` can override USB sysfs device discovery source during tests,
   - `VFIO_INTERACTIVE_IN` / `VFIO_INTERACTIVE_OUT` can override picker input/output streams during tests.
+- Improved USB exclusion picker visual matching:
+  - when color output is enabled, each entry number (`[n]`) now uses the strongest matching hint color so selection numbers visually match category hints:
+    - Storage (red), Bluetooth (yellow), Ethernet (green), Printer (blue).
+- Improved USB exclusion picker input guidance:
+  - picker overview now includes explicit multi-select examples for exclusions (`4 5 6` and `4,5,6`) so users can quickly exclude many entries in one input.
+- Added final USB exclusion selection review/apply flow:
+  - picker now shows a selection review before saving `EXCLUDE_IDS`,
+  - users can decline apply and re-enter selections to correct mistakes before write.
+- Clarified USB exclusion behavior for VM passthrough:
+  - IDs selected for `EXCLUDE_IDS` remain bound on host,
+  - IDs not excluded remain eligible for automatic detach in USB passthrough workflows.
+- Improved USB exclusion review clarity:
+  - review now includes per-device mode labels (`HOST-BOUND` / `VM-ELIGIBLE`) before apply so users can verify passthrough intent at a glance.
 
 ---
 

@@ -5523,14 +5523,18 @@ configure_usb_bt_exclude_ids_interactive() {
 
   local -a ids=()
   local -a labels=()
+  local -a index_colors=()
   local -a storage_ids_order=()
   local -A storage_id_to_label=()
   local usb_devices_glob
   local dev name vid pid manufacturer product hint line
+  local is_bt is_eth is_prn is_stg
   local bt_hint_plain bt_hint_colored bt_hint_note
   local eth_hint_plain eth_hint_colored eth_hint_note
   local prn_hint_plain prn_hint_colored prn_hint_note
   local stg_hint_plain stg_hint_colored stg_hint_note
+  local mode_host_plain mode_host_colored mode_host_note
+  local mode_vm_plain mode_vm_colored mode_vm_note
   bt_hint_plain="[hint: Bluetooth detected]"
   bt_hint_colored="[hint: ${C_BOLD}${C_YELLOW}Bluetooth detected${C_RESET}]"
   bt_hint_note="$bt_hint_plain"
@@ -5543,11 +5547,19 @@ configure_usb_bt_exclude_ids_interactive() {
   stg_hint_plain="[danger: Storage]"
   stg_hint_colored="[danger: ${C_BOLD}${C_RED}Storage${C_RESET}]"
   stg_hint_note="$stg_hint_plain"
+  mode_host_plain="[HOST-BOUND]"
+  mode_host_colored="[${C_BOLD}${C_GREEN}HOST-BOUND${C_RESET}]"
+  mode_host_note="$mode_host_plain"
+  mode_vm_plain="[VM-ELIGIBLE]"
+  mode_vm_colored="[${C_BOLD}${C_YELLOW}VM-ELIGIBLE${C_RESET}]"
+  mode_vm_note="$mode_vm_plain"
   if (( ENABLE_COLOR )); then
     bt_hint_note="$bt_hint_colored"
     eth_hint_note="$eth_hint_colored"
     prn_hint_note="$prn_hint_colored"
     stg_hint_note="$stg_hint_colored"
+    mode_host_note="$mode_host_colored"
+    mode_vm_note="$mode_vm_colored"
   fi
 
   usb_devices_glob="${VFIO_USB_SYSFS_GLOB:-/sys/bus/usb/devices/*}"
@@ -5564,7 +5576,12 @@ configure_usb_bt_exclude_ids_interactive() {
     manufacturer="$(cat "$dev/manufacturer" 2>/dev/null || true)"
     product="$(cat "$dev/product" 2>/dev/null || true)"
     hint=""
+    is_bt=0
+    is_eth=0
+    is_prn=0
+    is_stg=0
     if usb_sysfs_device_is_bluetooth "$dev"; then
+      is_bt=1
       if (( ENABLE_COLOR )); then
         hint+=" $bt_hint_colored"
       else
@@ -5572,6 +5589,7 @@ configure_usb_bt_exclude_ids_interactive() {
       fi
     fi
     if usb_sysfs_device_is_ethernet "$dev"; then
+      is_eth=1
       if (( ENABLE_COLOR )); then
         hint+=" $eth_hint_colored"
       else
@@ -5579,6 +5597,7 @@ configure_usb_bt_exclude_ids_interactive() {
       fi
     fi
     if usb_sysfs_device_is_printer "$dev"; then
+      is_prn=1
       if (( ENABLE_COLOR )); then
         hint+=" $prn_hint_colored"
       else
@@ -5586,6 +5605,7 @@ configure_usb_bt_exclude_ids_interactive() {
       fi
     fi
     if usb_sysfs_device_is_storage "$dev"; then
+      is_stg=1
       if (( ENABLE_COLOR )); then
         hint+=" $stg_hint_colored"
       else
@@ -5602,6 +5622,17 @@ configure_usb_bt_exclude_ids_interactive() {
     line+="$hint"
     ids+=("$vid:$pid")
     labels+=("$line")
+    if (( is_stg )); then
+      index_colors+=("${C_BOLD}${C_RED}")
+    elif (( is_bt )); then
+      index_colors+=("${C_BOLD}${C_YELLOW}")
+    elif (( is_eth )); then
+      index_colors+=("${C_BOLD}${C_GREEN}")
+    elif (( is_prn )); then
+      index_colors+=("${C_BOLD}${C_BLUE}")
+    else
+      index_colors+=("")
+    fi
   done
 
   if (( ${#ids[@]} == 0 )); then
@@ -5615,13 +5646,19 @@ configure_usb_bt_exclude_ids_interactive() {
   note "Entries marked '$bt_hint_note' are likely Bluetooth adapters."
   note "Entries marked '$eth_hint_note' or '$prn_hint_note' are usually host devices to keep bound (do NOT unbind)."
   note "Entries marked '$stg_hint_note' are high-risk to unbind (can disconnect active host storage)."
+  note "When color output is enabled, entry numbers use the strongest matching hint color (Storage > Bluetooth > Ethernet > Printer)."
   note "Recommended: include ALL '$stg_hint_note' entries in your exclusion selection."
   note "Selecting a number here means EXCLUDE from unbind (keep bound on host)."
+  note "Only devices NOT excluded remain eligible for automatic detach so they can be used for VM USB passthrough."
+  note "Multi-select example: type '4 5 6' (or '4,5,6') to exclude multiple entries from unbind."
   note "Selection is saved as EXCLUDE_IDS in: $USB_BT_MATCH_CONF"
-
-  local i
+  local i idx_text
   for i in "${!labels[@]}"; do
-    say "  [$((i+1))] ${labels[$i]}"
+    idx_text="[$((i+1))]"
+    if (( ENABLE_COLOR )) && [[ -n "${index_colors[$i]:-}" ]]; then
+      idx_text="${index_colors[$i]}[$((i+1))]${C_RESET}"
+    fi
+    say "  ${idx_text} ${labels[$i]}"
   done
 
   local in out answer interactive_in_fd
@@ -5648,6 +5685,7 @@ configure_usb_bt_exclude_ids_interactive() {
 
     exclude_csv=""
     local -A seen_ids=()
+    local -a selected_indexes=()
     if [[ -n "$answer" ]]; then
       answer="${answer//,/ }"
       local token idx id
@@ -5665,6 +5703,7 @@ configure_usb_bt_exclude_ids_interactive() {
         if [[ -z "${seen_ids[$id]:-}" ]]; then
           exclude_csv+="${exclude_csv:+,}$id"
           seen_ids[$id]=1
+          selected_indexes+=("$idx")
         fi
       done
     fi
@@ -5677,29 +5716,67 @@ configure_usb_bt_exclude_ids_interactive() {
       fi
     done
 
-    if (( ${#missing_storage_ids[@]} == 0 )); then
-      break
+    if (( ${#missing_storage_ids[@]} > 0 )); then
+      say
+      if (( ENABLE_COLOR )); then
+        say "${C_BOLD}${C_RED}DANGER:${C_RESET} Some storage devices are NOT excluded from unbind."
+      else
+        say "DANGER: Some storage devices are NOT excluded from unbind."
+      fi
+      note "Unbinding storage-class USB devices can disconnect active host disks and cause data loss."
+      note "Storage entries currently not excluded:"
+      for sid in "${missing_storage_ids[@]}"; do
+        note "  - ${storage_id_to_label[$sid]}"
+      done
+
+      if prompt_yn "Re-enter exclusion numbers now to include these storage devices?" Y "Storage safety"; then
+        continue
+      fi
+      if ! confirm_phrase "Proceeding without excluding all storage devices is risky." "I ACCEPT STORAGE RISK"; then
+        note "Risk confirmation not accepted; please choose exclusions again."
+        continue
+      fi
     fi
 
     say
-    if (( ENABLE_COLOR )); then
-      say "${C_BOLD}${C_RED}DANGER:${C_RESET} Some storage devices are NOT excluded from unbind."
+    note "Selection review (EXCLUDE from unbind):"
+    if [[ -n "$exclude_csv" ]]; then
+      note "Selected EXCLUDE_IDS: $exclude_csv"
+      local selected_idx selected_idx_text selected_idx_num
+      note "Selected entries:"
+      for selected_idx in "${selected_indexes[@]}"; do
+        selected_idx_num=$((selected_idx+1))
+        selected_idx_text="[$selected_idx_num]"
+        if (( ENABLE_COLOR )) && [[ -n "${index_colors[$selected_idx]:-}" ]]; then
+          selected_idx_text="${index_colors[$selected_idx]}[$selected_idx_num]${C_RESET}"
+        fi
+        note "  - ${selected_idx_text} ${labels[$selected_idx]}"
+      done
     else
-      say "DANGER: Some storage devices are NOT excluded from unbind."
+      note "No entries selected; EXCLUDE_IDS will be empty."
     fi
-    note "Unbinding storage-class USB devices can disconnect active host disks and cause data loss."
-    note "Storage entries currently not excluded:"
-    for sid in "${missing_storage_ids[@]}"; do
-      note "  - ${storage_id_to_label[$sid]}"
+    note "Mode summary per listed device:"
+    note "  $mode_host_note = excluded from unbind (stays bound on host)"
+    note "  $mode_vm_note = not excluded (eligible for automatic detach for VM USB passthrough)"
+    local entry_id mode_tag
+    for i in "${!labels[@]}"; do
+      idx_text="[$((i+1))]"
+      if (( ENABLE_COLOR )) && [[ -n "${index_colors[$i]:-}" ]]; then
+        idx_text="${index_colors[$i]}[$((i+1))]${C_RESET}"
+      fi
+      entry_id="${ids[$i]}"
+      if [[ -n "${seen_ids[$entry_id]:-}" ]]; then
+        mode_tag="$mode_host_note"
+      else
+        mode_tag="$mode_vm_note"
+      fi
+      note "  - ${idx_text} ${mode_tag} ${labels[$i]}"
     done
 
-    if prompt_yn "Re-enter exclusion numbers now to include these storage devices?" Y "Storage safety"; then
-      continue
-    fi
-    if confirm_phrase "Proceeding without excluding all storage devices is risky." "I ACCEPT STORAGE RISK"; then
+    if prompt_yn "Apply this exclusion selection?" Y "USB exclusion review"; then
       break
     fi
-    note "Risk confirmation not accepted; please choose exclusions again."
+    note "Selection not applied; re-enter numbers to adjust your choices."
   done
   if [[ -n "$interactive_in_fd" ]]; then
     exec {interactive_in_fd}<&-

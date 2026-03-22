@@ -30,6 +30,18 @@
 - Added deterministic test hooks for USB exclusion picker regression control:
   - `VFIO_USB_SYSFS_GLOB` to override USB device discovery source in tests,
   - `VFIO_INTERACTIVE_IN` / `VFIO_INTERACTIVE_OUT` to override picker input/output streams in tests.
+- Improved USB exclusion picker readability with category-colored index labels:
+  - when color output is enabled, entry numbers (`[n]`) now inherit the strongest matched category color (`Storage > Bluetooth > Ethernet > Printer`) so selection numbers visually match hint labels.
+- Improved USB exclusion picker prompt guidance:
+  - picker overview now includes explicit multi-select examples (`4 5 6` and `4,5,6`) for excluding many entries in one input.
+- Added final selection review/apply loop in USB exclusion picker:
+  - picker now always shows a pre-save review of selected exclusions,
+  - users can decline apply and re-enter selections before writing `EXCLUDE_IDS`.
+- Clarified USB exclusion semantics for VM passthrough workflows:
+  - excluded IDs remain host-bound (`EXCLUDE_IDS`),
+  - non-excluded IDs remain eligible for automatic detach when using USB passthrough.
+- Improved USB exclusion review clarity with per-device mode labels:
+  - review now prints a mode summary for each listed USB entry using `HOST-BOUND` and `VM-ELIGIBLE` tags before apply confirmation.
 - Improved optional USB Bluetooth mitigation install flow:
   - added interactive numbered USB device listing for `EXCLUDE_IDS` selection,
   - added helper hints that label entries where Bluetooth interfaces are detected.
