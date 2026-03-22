@@ -57,6 +57,10 @@
   - helper script, systemd unit, and udev rule writes are now skipped when generated content is unchanged on rerun.
 - Refined unchanged-rerun immediate-start gating:
   - immediate service start is now skipped only when both exclusion selection and generated artifact content are unchanged for an existing install.
+- Added preconfigured USB exclusions/policy detection in mitigation installer reruns:
+  - when existing non-default USB Bluetooth policy is detected, installer now asks whether to reconfigure instead of always opening the exclusions picker.
+- Added explicit keep-existing policy path for reruns:
+  - declining reconfigure now preserves existing exclusions/policy and skips picker execution.
 - Updated VM-eligible picker indexing/review behavior for focused view:
   - selection numbers are now mapped to the currently displayed list (focused or full),
   - selection review now uses the same active view indexing so confirmation output matches chosen view mode.
@@ -71,6 +75,9 @@
 - Extended `regression/usb-storage-exclusion-regression.sh` installer rerun coverage:
   - validates unchanged reruns do not rewrite generated helper/unit/udev artifacts,
   - validates second unchanged rerun keeps service enabled without issuing immediate `enable --now`.
+- Extended `regression/usb-storage-exclusion-regression.sh` preconfigured-rerun coverage:
+  - validates installer rerun detects preconfigured policy and uses explicit reconfigure prompt,
+  - validates declining reconfigure skips picker execution while retaining no-immediate-restart behavior.
 - Added deterministic test hooks for USB exclusion picker regression control:
   - `VFIO_USB_SYSFS_GLOB` to override USB device discovery source in tests,
   - `VFIO_INTERACTIVE_IN` / `VFIO_INTERACTIVE_OUT` to override picker input/output streams in tests.

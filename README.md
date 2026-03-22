@@ -72,6 +72,10 @@ The script is designed to be **interactive, defensive and reversible**, so that 
   - installer now skips rewriting the helper script, systemd unit, and udev rule when generated content is unchanged.
 - Refined unchanged-rerun service apply logic:
   - immediate service start is now skipped only when both exclusion selection and generated artifact content are unchanged on rerun.
+- Added preconfigured USB mitigation detection on installer reruns:
+  - when an existing non-default USB Bluetooth exclusions/policy config is detected, installer now prompts to reconfigure explicitly instead of forcing the exclusions picker flow.
+- Added explicit keep-existing behavior for preconfigured reruns:
+  - declining reconfigure now preserves existing exclusions/policy without entering the picker.
 - Updated storage-risk interlock to match VM-eligible-first input:
   - interlock/warning now triggers when storage IDs are selected as VM-eligible detach targets,
   - risk rejection now loops back with VM-eligible wording so users can remove storage from detach selection.
@@ -371,6 +375,7 @@ The script supports several modes controlled by flags. By default, without any f
   - Reruns are idempotent for USB selection: when the chosen VM-eligible set resolves to the same `EXCLUDE_IDS`, config writes are skipped.
   - Reruns are also content-aware for mitigation artifacts: unchanged helper/unit/udev generated content is not rewritten.
   - Existing mitigation service setup is not immediately re-run only when both selection and generated artifact content are unchanged.
+  - When a preconfigured non-default exclusions/policy config already exists, installer reruns now ask whether to reconfigure it; declining keeps existing config without reopening the picker.
   - If storage-marked entries are not excluded, the picker adds a final danger confirmation step before allowing install flow to continue.
 
 - `--print-fish-completion`

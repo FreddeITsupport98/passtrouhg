@@ -494,6 +494,8 @@ assert_eq "case13 first run writes unit once" "1" "$case13_unit_write_count_afte
 assert_eq "case13 first run writes udev rule once" "1" "$case13_rule_write_count_after_first"
 case13_run1_log_text="$(cat "$case13_run_log")"
 assert_contains_text "case13 first run enables and starts service" "systemctl enable --now vfio-disable-usb-bluetooth.service" "$case13_run1_log_text"
+# Seed a preconfigured exclusion policy to simulate real rerun state.
+make_match_conf "$case13_conf" "auto" "" "aaaa:0001"
 
 PROMPT_RESPONSES=(1)
 CONFIRM_RESPONSES=()
@@ -507,11 +509,16 @@ case13_rule_write_count_after_second="$(grep -Fc -- "$case13_rule" "$case13_writ
 assert_eq "case13 second run does not rewrite unchanged helper" "1" "$case13_helper_write_count_after_second"
 assert_eq "case13 second run does not rewrite unchanged unit" "1" "$case13_unit_write_count_after_second"
 assert_eq "case13 second run does not rewrite unchanged udev rule" "1" "$case13_rule_write_count_after_second"
+assert_eq "case13 second run asks only preconfigured reconfigure prompt" "1" "$prompt_yn_calls"
+assert_eq "case13 second run does not use confirm_phrase" "0" "$confirm_phrase_calls"
 case13_run2_log_text="$(cat "$case13_run_log")"
 case13_run2_stdout_text="$(cat "$case13_run2_stdout")"
 assert_contains_text "case13 second run keeps service enabled without immediate run" "systemctl enable vfio-disable-usb-bluetooth.service" "$case13_run2_log_text"
 assert_not_contains_text "case13 second run does not issue enable --now when unchanged" "systemctl enable --now vfio-disable-usb-bluetooth.service" "$case13_run2_log_text"
 assert_contains_text "case13 second run prints unchanged-start skip note" "USB Bluetooth settings unchanged; skipping immediate service run." "$case13_run2_stdout_text"
+assert_contains_text "case13 second run detects existing preconfigured policy" "Detected existing USB Bluetooth mitigation configuration in:" "$case13_run2_stdout_text"
+assert_contains_text "case13 second run keeps preconfigured policy when reconfigure declined" "Keeping existing USB Bluetooth exclusions/policy without reconfiguration." "$case13_run2_stdout_text"
+assert_not_contains_text "case13 second run does not enter picker when reconfigure declined" "USB Bluetooth mitigation exclusions" "$case13_run2_stdout_text"
 
 if (( fail != 0 )); then
   exit 1

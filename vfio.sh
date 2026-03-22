@@ -6051,10 +6051,12 @@ configure_usb_bt_exclude_ids_interactive() {
 
 install_usb_bluetooth_disable() {
   local had_unit had_match_conf should_start_now usb_bt_artifacts_changed
+  local existing_match_mode existing_include_ids existing_exclude_ids exclusions_preconfigured
   had_unit=0
   had_match_conf=0
   should_start_now=1
   usb_bt_artifacts_changed=0
+  exclusions_preconfigured=0
   if [[ -f "$USB_BT_SYSTEMD_UNIT" ]]; then
     had_unit=1
   fi
@@ -6065,6 +6067,13 @@ install_usb_bluetooth_disable() {
   ensure_usb_bt_match_conf_present "$USB_BT_MATCH_CONF" || die "Unable to create USB Bluetooth match policy config: $USB_BT_MATCH_CONF"
   if [[ "$had_match_conf" -eq 0 ]]; then
     usb_bt_artifacts_changed=1
+  fi
+  existing_match_mode="$(awk -F= '/^MATCH_MODE=/{v=$2; gsub(/"/,"",v); gsub(/[[:space:]]/,"",v); print tolower(v); exit}' "$USB_BT_MATCH_CONF" 2>/dev/null || true)"
+  existing_include_ids="$(awk -F= '/^INCLUDE_IDS=/{v=$2; gsub(/"/,"",v); gsub(/[[:space:]]/,"",v); print tolower(v); exit}' "$USB_BT_MATCH_CONF" 2>/dev/null || true)"
+  existing_exclude_ids="$(awk -F= '/^EXCLUDE_IDS=/{v=$2; gsub(/"/,"",v); gsub(/[[:space:]]/,"",v); print tolower(v); exit}' "$USB_BT_MATCH_CONF" 2>/dev/null || true)"
+  existing_match_mode="${existing_match_mode:-auto}"
+  if [[ "$existing_match_mode" != "auto" || -n "$existing_include_ids" || -n "$existing_exclude_ids" ]]; then
+    exclusions_preconfigured=1
   fi
 
   if write_file_atomic_if_changed "$USB_BT_SCRIPT" 0755 "root:root" 1 <<'EOF'
@@ -6278,7 +6287,21 @@ EOF
     usb_bt_artifacts_changed=1
   fi
 
-  if prompt_yn "Review USB devices now and choose EXCLUDE_IDS for mitigation?" Y "USB Bluetooth exclusions"; then
+  if (( exclusions_preconfigured )) && [[ "$had_unit" -eq 1 && "$had_match_conf" -eq 1 ]]; then
+    note "Detected existing USB Bluetooth mitigation configuration in: $USB_BT_MATCH_CONF"
+    if prompt_yn "Existing USB Bluetooth exclusions/policy detected. Reconfigure now?" N "USB Bluetooth exclusions"; then
+      configure_usb_bt_exclude_ids_interactive
+      if [[ "${USB_BT_EXCLUDE_CHANGED:-0}" == "0" && "$had_unit" -eq 1 && "$usb_bt_artifacts_changed" -eq 0 ]]; then
+        should_start_now=0
+      fi
+    else
+      note "Keeping existing USB Bluetooth exclusions/policy without reconfiguration."
+      USB_BT_EXCLUDE_CHANGED=0
+      if [[ "$had_unit" -eq 1 && "$usb_bt_artifacts_changed" -eq 0 ]]; then
+        should_start_now=0
+      fi
+    fi
+  elif prompt_yn "Review USB devices now and choose EXCLUDE_IDS for mitigation?" Y "USB Bluetooth exclusions"; then
     configure_usb_bt_exclude_ids_interactive
     if [[ "${USB_BT_EXCLUDE_CHANGED:-0}" == "0" && "$had_unit" -eq 1 && "$usb_bt_artifacts_changed" -eq 0 ]]; then
       should_start_now=0
