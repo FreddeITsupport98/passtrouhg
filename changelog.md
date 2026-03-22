@@ -1,5 +1,14 @@
 # Changelog
 ## Unreleased
+- Improved `regression/custom-kernel-params-regression.sh` CI triage readability:
+  - failed assertion names are now collected and printed in a final `FAIL SUMMARY (N)` block before non-zero exit.
+- Extended the same CI triage fail-summary pattern across existing regression suites:
+  - `regression/boot-vga-policy-regression.sh`
+  - `regression/completion-output-regression.sh`
+  - `regression/openbox-monitor-regression.sh`
+  - `regression/protocol-mode-regression.sh`
+  - `regression/usb-storage-exclusion-regression.sh`
+- Updated `regression/regression-template.sh` so newly generated regression files inherit the same `FAIL SUMMARY (N)` behavior by default.
 - Hardened CI shell-lint compatibility across older ShellCheck releases:
   - updated modified scripts to explicitly consume intentionally ignored capture variables,
   - avoids legacy `SC2034` false-positive failures in stricter/older ShellCheck environments.

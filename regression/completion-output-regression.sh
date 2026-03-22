@@ -11,6 +11,13 @@ if [[ ! -f "$VFIO_SCRIPT" ]]; then
 fi
 
 fail=0
+FAILED_ASSERTIONS=()
+
+record_failure() {
+  local name="$1"
+  FAILED_ASSERTIONS+=("$name")
+  fail=1
+}
 
 assert_non_empty() {
   local name="$1" value="$2"
@@ -18,7 +25,7 @@ assert_non_empty() {
     printf 'PASS: %s\n' "$name"
   else
     printf 'FAIL: %s (output was empty)\n' "$name" >&2
-    fail=1
+    record_failure "$name"
   fi
 }
 
@@ -28,7 +35,7 @@ assert_contains_text() {
     printf 'PASS: %s\n' "$name"
   else
     printf 'FAIL: %s (pattern not found: %s)\n' "$name" "$pattern" >&2
-    fail=1
+    record_failure "$name"
   fi
 }
 
@@ -55,7 +62,7 @@ assert_shell_covers_help_options() {
         ;;
       *)
         printf 'FAIL: unknown shell for coverage check: %s\n' "$shell_name" >&2
-        fail=1
+        record_failure "unknown shell for coverage check: ${shell_name}"
         ;;
     esac
   done
@@ -75,7 +82,7 @@ capture_completion_mode() {
     if [[ -s "$err_file" ]]; then
       printf '%s\n' "stderr for ${mode}: $(cat "$err_file")" >&2
     fi
-    fail=1
+    record_failure "mode ${mode} exits successfully"
     printf '%s\n' ""
   fi
 
@@ -86,7 +93,7 @@ assert_non_empty "help output is non-empty" "$help_out"
 mapfile -t HELP_LONG_OPTS < <(extract_help_long_options "$help_out")
 if (( ${#HELP_LONG_OPTS[@]} == 0 )); then
   printf 'FAIL: no long options parsed from --help output\n' >&2
-  fail=1
+  record_failure "long options parsed from --help output"
 else
   printf 'PASS: parsed %d long options from --help\n' "${#HELP_LONG_OPTS[@]}"
 fi
@@ -112,6 +119,10 @@ assert_contains_text "zsh completion includes boot-vga-policy values" ":policy:(
 assert_shell_covers_help_options "zsh" "$zsh_out"
 
 if (( fail != 0 )); then
+  printf '\nFAIL SUMMARY (%d)\n' "${#FAILED_ASSERTIONS[@]}" >&2
+  for failed_assertion in "${FAILED_ASSERTIONS[@]}"; do
+    printf ' - %s\n' "$failed_assertion" >&2
+  done
   exit 1
 fi
 printf 'Completion output regression checks passed.\n'

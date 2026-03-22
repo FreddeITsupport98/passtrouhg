@@ -16,6 +16,13 @@ fi
 source "$VFIO_SCRIPT"
 
 fail=0
+FAILED_ASSERTIONS=()
+
+record_failure() {
+  local name="$1"
+  FAILED_ASSERTIONS+=("$name")
+  fail=1
+}
 
 assert_eq() {
   local name="$1" expected="$2" actual="$3"
@@ -23,7 +30,7 @@ assert_eq() {
     printf 'PASS: %s\n' "$name"
   else
     printf 'FAIL: %s (expected="%s", got="%s")\n' "$name" "$expected" "$actual" >&2
-    fail=1
+    record_failure "$name"
   fi
 }
 
@@ -33,7 +40,7 @@ assert_contains_text() {
     printf 'PASS: %s\n' "$name"
   else
     printf 'FAIL: %s (pattern not found: %s)\n' "$name" "$pattern" >&2
-    fail=1
+    record_failure "$name"
   fi
 }
 
@@ -149,6 +156,10 @@ assert_eq \
   "$legacy_hits"
 
 if (( fail != 0 )); then
+  printf '\nFAIL SUMMARY (%d)\n' "${#FAILED_ASSERTIONS[@]}" >&2
+  for failed_assertion in "${FAILED_ASSERTIONS[@]}"; do
+    printf ' - %s\n' "$failed_assertion" >&2
+  done
   exit 1
 fi
 

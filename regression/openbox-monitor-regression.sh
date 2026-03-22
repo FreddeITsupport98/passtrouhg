@@ -14,6 +14,13 @@ fi
 source "$VFIO_SCRIPT"
 
 fail=0
+FAILED_ASSERTIONS=()
+
+record_failure() {
+  local name="$1"
+  FAILED_ASSERTIONS+=("$name")
+  fail=1
+}
 
 assert_eq() {
   local name="$1" expected="$2" actual="$3"
@@ -21,7 +28,7 @@ assert_eq() {
     printf 'PASS: %s\n' "$name"
   else
     printf 'FAIL: %s (expected="%s", got="%s")\n' "$name" "$expected" "$actual" >&2
-    fail=1
+    record_failure "$name"
   fi
 }
 
@@ -31,7 +38,7 @@ assert_contains() {
     printf 'PASS: %s\n' "$name"
   else
     printf 'FAIL: %s (pattern not found: %s)\n' "$name" "$pattern" >&2
-    fail=1
+    record_failure "$name"
   fi
 }
 
@@ -39,7 +46,7 @@ assert_not_contains() {
   local name="$1" pattern="$2" file="$3"
   if grep -Fq -- "$pattern" "$file"; then
     printf 'FAIL: %s (unexpected pattern found: %s)\n' "$name" "$pattern" >&2
-    fail=1
+    record_failure "$name"
   else
     printf 'PASS: %s\n' "$name"
   fi
@@ -112,6 +119,10 @@ assert_not_contains "remove hook clears end marker" "# END VFIO OPENBOX MONITOR 
 assert_contains "remove hook preserves existing lines" "nm-applet &" "$OPENBOX_AUTOSTART_FILE"
 
 if (( fail != 0 )); then
+  printf '\nFAIL SUMMARY (%d)\n' "${#FAILED_ASSERTIONS[@]}" >&2
+  for failed_assertion in "${FAILED_ASSERTIONS[@]}"; do
+    printf ' - %s\n' "$failed_assertion" >&2
+  done
   exit 1
 fi
 printf 'Openbox monitor regression checks passed.\n'
