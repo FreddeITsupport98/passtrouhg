@@ -62,6 +62,8 @@ The script is designed to be **interactive, defensive and reversible**, so that 
   - during selection, users can type `full` or `focus` to switch list views in-loop without restarting the picker.
 - Improved in-loop view-switch guidance after selection review retries:
   - when apply is declined in toggle-capable picker mode, wizard now prints a quick reminder for `full` / `focus` commands before re-entry.
+- Hardened USB Bluetooth exclusion apply path for missing config recovery:
+  - if `/etc/vfio-usb-bluetooth-match.conf` is missing at picker start/apply time, defaults are now recreated automatically instead of aborting with an awk file-open error.
 - Updated storage-risk interlock to match VM-eligible-first input:
   - interlock/warning now triggers when storage IDs are selected as VM-eligible detach targets,
   - risk rejection now loops back with VM-eligible wording so users can remove storage from detach selection.

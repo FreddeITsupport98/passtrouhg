@@ -47,6 +47,8 @@
   - users can now type `full` or `focus` while entering VM-eligible selections to switch list views without restarting the picker flow.
 - Improved picker retry guidance for view switching:
   - after users decline apply in toggle-capable mode, picker now prints a quick `full` / `focus` reminder before the next entry round.
+- Hardened USB Bluetooth exclusion persistence against missing match config:
+  - picker now auto-recreates `/etc/vfio-usb-bluetooth-match.conf` with defaults when missing at selection/apply time, preventing awk \"cannot open file\" failures.
 - Updated VM-eligible picker indexing/review behavior for focused view:
   - selection numbers are now mapped to the currently displayed list (focused or full),
   - selection review now uses the same active view indexing so confirmation output matches chosen view mode.

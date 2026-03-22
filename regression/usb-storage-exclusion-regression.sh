@@ -371,6 +371,35 @@ assert_eq "case10 final exclusions after decline/reselect in focused view" "aaaa
 assert_eq "case10 prompt_yn called three times (view choice + decline apply + accept apply)" "3" "$prompt_yn_calls"
 assert_eq "case10 confirm_phrase not called" "0" "$confirm_phrase_calls"
 assert_contains_text "case10 post-decline quick toggle reminder shown" "Quick view switch: type 'full' for all USB devices or 'focus' for Bluetooth-focused entries." "$case10_stdout_text"
+
+# Case 11: Missing match config should be auto-recreated and saved without crashing.
+case11_conf="$tmp_dir/case11-match.conf"
+case11_input="$tmp_dir/case11-input.txt"
+case11_out="$tmp_dir/case11-prompt.txt"
+case11_stdout="$tmp_dir/case11-stdout.txt"
+case11_stderr="$tmp_dir/case11-stderr.txt"
+rm -f "$case11_conf"
+cat >"$case11_input" <<'EOF'
+1
+EOF
+BT_USB_DEVICE_NAME=""
+prompt_yn_calls=0
+confirm_phrase_calls=0
+PROMPT_RESPONSES=(0)
+CONFIRM_RESPONSES=()
+run_case "case11-missing-config-autorecover" "$case11_conf" "$case11_input" "$case11_out" "$case11_stdout" "$case11_stderr"
+case11_exclude_ids="$(extract_exclude_ids "$case11_conf")"
+case11_stdout_text="$(cat "$case11_stdout")"
+if [[ -f "$case11_conf" ]]; then
+  case11_conf_present="yes"
+else
+  case11_conf_present="no"
+fi
+assert_eq "case11 recreated missing match config" "yes" "$case11_conf_present"
+assert_eq "case11 persisted exclusions after recreate" "bbbb:0002" "$case11_exclude_ids"
+assert_eq "case11 prompt_yn called once for apply" "1" "$prompt_yn_calls"
+assert_eq "case11 confirm_phrase not called" "0" "$confirm_phrase_calls"
+assert_contains_text "case11 recreate note shown" "USB Bluetooth match config was missing; recreating defaults at:" "$case11_stdout_text"
 BT_USB_DEVICE_NAME=""
 
 if (( fail != 0 )); then
