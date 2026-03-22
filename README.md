@@ -47,6 +47,14 @@ The script is designed to be **interactive, defensive and reversible**, so that 
   - if any storage-marked USB IDs are left out of `EXCLUDE_IDS`, the picker now shows an explicit danger summary and requires either:
     - re-entering exclusions to include them, or
     - typing the confirmation phrase `I ACCEPT STORAGE RISK` to proceed anyway.
+- Added focused regression coverage for storage-risk exclusion safety:
+  - new `regression/usb-storage-exclusion-regression.sh` verifies:
+    - re-entry flow when storage IDs are missed,
+    - explicit risk-accept path via `I ACCEPT STORAGE RISK`,
+    - rejected risk-confirmation loop that forces another selection round.
+- Added non-default test hooks for deterministic USB exclusion regression execution:
+  - `VFIO_USB_SYSFS_GLOB` can override USB sysfs device discovery source during tests,
+  - `VFIO_INTERACTIVE_IN` / `VFIO_INTERACTIVE_OUT` can override picker input/output streams during tests.
 
 ---
 

@@ -25,6 +25,11 @@
 - Added storage omission confirmation interlock in exclusion picker:
   - when any storage-marked USB IDs are not selected for `EXCLUDE_IDS`, picker now shows an explicit danger summary,
   - user must either re-enter exclusions or type `I ACCEPT STORAGE RISK` to continue.
+- Added `regression/usb-storage-exclusion-regression.sh`:
+  - validates storage-risk exclusion interlock behavior for re-entry, accepted risk phrase, and rejected risk-phrase loop flows.
+- Added deterministic test hooks for USB exclusion picker regression control:
+  - `VFIO_USB_SYSFS_GLOB` to override USB device discovery source in tests,
+  - `VFIO_INTERACTIVE_IN` / `VFIO_INTERACTIVE_OUT` to override picker input/output streams in tests.
 - Improved optional USB Bluetooth mitigation install flow:
   - added interactive numbered USB device listing for `EXCLUDE_IDS` selection,
   - added helper hints that label entries where Bluetooth interfaces are detected.

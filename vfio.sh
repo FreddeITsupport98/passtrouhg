@@ -5525,6 +5525,7 @@ configure_usb_bt_exclude_ids_interactive() {
   local -a labels=()
   local -a storage_ids_order=()
   local -A storage_id_to_label=()
+  local usb_devices_glob
   local dev name vid pid manufacturer product hint line
   local bt_hint_plain bt_hint_colored bt_hint_note
   local eth_hint_plain eth_hint_colored eth_hint_note
@@ -5549,7 +5550,8 @@ configure_usb_bt_exclude_ids_interactive() {
     stg_hint_note="$stg_hint_colored"
   fi
 
-  for dev in /sys/bus/usb/devices/*; do
+  usb_devices_glob="${VFIO_USB_SYSFS_GLOB:-/sys/bus/usb/devices/*}"
+  for dev in $usb_devices_glob; do
     [[ -f "$dev/idVendor" && -f "$dev/idProduct" ]] || continue
     name="$(basename "$dev")"
     # Keep only physical USB device paths and skip interface pseudo-paths.
@@ -5622,16 +5624,26 @@ configure_usb_bt_exclude_ids_interactive() {
     say "  [$((i+1))] ${labels[$i]}"
   done
 
-  local in="/dev/stdin" out="/dev/stderr" answer
-  if [[ -r /dev/tty && -w /dev/tty ]]; then
+  local in out answer interactive_in_fd
+  interactive_in_fd=""
+  in="${VFIO_INTERACTIVE_IN:-/dev/stdin}"
+  out="${VFIO_INTERACTIVE_OUT:-/dev/stderr}"
+  if [[ -z "${VFIO_INTERACTIVE_IN:-}" && -z "${VFIO_INTERACTIVE_OUT:-}" && -r /dev/tty && -w /dev/tty ]]; then
     in="/dev/tty"
     out="/dev/tty"
+  fi
+  if [[ -n "${VFIO_INTERACTIVE_IN:-}" ]]; then
+    exec {interactive_in_fd}<"$in"
   fi
 
   local exclude_csv=""
   while true; do
     printf '%s' "Enter numbers to EXCLUDE from unbind (comma/space separated, ENTER for none): " >"$out"
-    read -r answer <"$in" || answer=""
+    if [[ -n "$interactive_in_fd" ]]; then
+      read -r -u "$interactive_in_fd" answer || answer=""
+    else
+      read -r answer <"$in" || answer=""
+    fi
     answer="$(trim "$answer")"
 
     exclude_csv=""
@@ -5689,6 +5701,9 @@ configure_usb_bt_exclude_ids_interactive() {
     fi
     note "Risk confirmation not accepted; please choose exclusions again."
   done
+  if [[ -n "$interactive_in_fd" ]]; then
+    exec {interactive_in_fd}<&-
+  fi
 
   local tmp mode owner group
   tmp="$(mktemp)"
