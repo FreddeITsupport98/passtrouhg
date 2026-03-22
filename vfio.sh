@@ -5516,9 +5516,9 @@ usb_sysfs_device_is_storage() {
 }
 
 configure_usb_bt_exclude_ids_interactive() {
-  # Build a numbered USB device list and let the user choose EXCLUDE_IDS.
-  # Exclusions are VID:PID based, so selecting one entry excludes all devices
-  # with that ID pair.
+  # Build a numbered USB device list and let the user choose VM-eligible IDs.
+  # Selection is VID:PID based. Interactive picks mark VM-eligible IDs and the
+  # inverse set is written to EXCLUDE_IDS as host-bound IDs.
   local conf="$USB_BT_MATCH_CONF"
   [[ -f "$conf" ]] || return 0
   local match_mode include_ids storage_interlock_required
@@ -5533,7 +5533,10 @@ configure_usb_bt_exclude_ids_interactive() {
   local -a ids=()
   local -a labels=()
   local -a index_colors=()
+  local -a is_bt_flags=()
+  local -a unique_ids_order=()
   local -a storage_ids_order=()
+  local -A all_ids_seen=()
   local -A storage_id_to_label=()
   local usb_devices_glob
   local dev name vid pid manufacturer product hint line
@@ -5631,6 +5634,11 @@ configure_usb_bt_exclude_ids_interactive() {
     line+="$hint"
     ids+=("$vid:$pid")
     labels+=("$line")
+    is_bt_flags+=("$is_bt")
+    if [[ -z "${all_ids_seen[$vid:$pid]:-}" ]]; then
+      unique_ids_order+=("$vid:$pid")
+      all_ids_seen["$vid:$pid"]=1
+    fi
     if (( is_stg )); then
       index_colors+=("${C_BOLD}${C_RED}")
     elif (( is_bt )); then
@@ -5648,27 +5656,61 @@ configure_usb_bt_exclude_ids_interactive() {
     note "No USB devices discovered for exclusion selection; leaving EXCLUDE_IDS unchanged."
     return 0
   fi
+  local show_full_list filtered_view_active bt_entry_count can_toggle_view
+  local -a display_indexes=()
+  show_full_list=1
+  filtered_view_active=0
+  can_toggle_view=0
+  bt_entry_count=0
+  for i in "${!ids[@]}"; do
+    if (( ${is_bt_flags[$i]:-0} )); then
+      bt_entry_count=$((bt_entry_count + 1))
+    fi
+  done
+  if (( ! storage_interlock_required && bt_entry_count > 0 && bt_entry_count < ${#ids[@]} )); then
+    can_toggle_view=1
+  fi
+  if (( can_toggle_view )); then
+    note "Current policy is Bluetooth-only; you can show a Bluetooth-focused list or the full USB list."
+    if prompt_yn "Show full USB list (all devices) instead of Bluetooth-focused view?" N "USB picker view"; then
+      show_full_list=1
+    else
+      show_full_list=0
+      filtered_view_active=1
+    fi
+  fi
+  for i in "${!ids[@]}"; do
+    if (( show_full_list )) || (( ${is_bt_flags[$i]:-0} )); then
+      display_indexes+=("$i")
+    fi
+  done
+  if (( ${#display_indexes[@]} == 0 )); then
+    show_full_list=1
+    filtered_view_active=0
+    for i in "${!ids[@]}"; do
+      display_indexes+=("$i")
+    done
+  fi
 
   say
   hdr "USB Bluetooth mitigation exclusions"
-  note "Pick USB devices that should stay on your host (never detached by this helper)."
-  note "Selecting a number means: keep this device host-bound (saved in EXCLUDE_IDS)."
-  note "If you want a Bluetooth adapter available for VM passthrough, do NOT select it here."
-  note "If you want a Bluetooth adapter to remain usable on the host, select it."
+  note "Pick USB devices that should be VM-eligible (this helper may auto-detach them for passthrough)."
+  note "Selecting a number means: allow this device ID to be detached for VM passthrough."
+  note "If you want a Bluetooth adapter available for VM passthrough, select it here."
+  note "If you want a Bluetooth adapter to remain usable on the host, do NOT select it."
+  note "Unselected IDs are kept host-bound and saved into EXCLUDE_IDS."
   note "Entries marked '$bt_hint_note' are likely Bluetooth adapters."
   note "Entries marked '$eth_hint_note' or '$prn_hint_note' are usually host devices you should keep host-bound."
   note "Entries marked '$stg_hint_note' are high-risk to detach (can disconnect active host storage)."
   note "When color output is enabled, entry numbers use the strongest matching hint color (Storage > Bluetooth > Ethernet > Printer)."
-  note "Multi-select example: type '4 5 6' (or '4,5,6') to keep multiple devices host-bound."
-  note "Selection is saved as EXCLUDE_IDS in: $USB_BT_MATCH_CONF"
-  local i idx_text
-  for i in "${!labels[@]}"; do
-    idx_text="[$((i+1))]"
-    if (( ENABLE_COLOR )) && [[ -n "${index_colors[$i]:-}" ]]; then
-      idx_text="${index_colors[$i]}[$((i+1))]${C_RESET}"
-    fi
-    say "  ${idx_text} ${labels[$i]}"
-  done
+  note "Multi-select example: type '4 5 6' (or '4,5,6') to mark multiple devices VM-eligible."
+  note "Your VM-eligible picks are converted into EXCLUDE_IDS (unselected host-bound IDs) in: $USB_BT_MATCH_CONF"
+  if (( can_toggle_view )); then
+    note "Type 'full' to show all USB devices, or 'focus' to show Bluetooth-focused entries."
+  fi
+  local i idx_text display_no render_device_list
+  local -A display_num_by_idx=()
+  render_device_list=1
 
   local in out answer interactive_in_fd
   interactive_in_fd=""
@@ -5683,83 +5725,161 @@ configure_usb_bt_exclude_ids_interactive() {
   fi
 
   local exclude_csv=""
+  local vm_csv=""
   while true; do
-    printf '%s' "Enter numbers to keep host-bound (comma/space separated, ENTER for none): " >"$out"
+    if (( render_device_list )); then
+      if (( filtered_view_active )); then
+        note "Bluetooth-focused view is active (showing likely detach targets)."
+      fi
+      display_num_by_idx=()
+      display_no=0
+      for i in "${display_indexes[@]}"; do
+        display_no=$((display_no + 1))
+        display_num_by_idx["$i"]="$display_no"
+        idx_text="[$display_no]"
+        if (( ENABLE_COLOR )) && [[ -n "${index_colors[$i]:-}" ]]; then
+          idx_text="${index_colors[$i]}[$display_no]${C_RESET}"
+        fi
+        say "  ${idx_text} ${labels[$i]}"
+      done
+      render_device_list=0
+    fi
+    if (( can_toggle_view )); then
+      printf '%s' "Enter numbers to make VM-eligible (comma/space separated, ENTER for none, or type 'full'/'focus'): " >"$out"
+    else
+      printf '%s' "Enter numbers to make VM-eligible (comma/space separated, ENTER for none): " >"$out"
+    fi
     if [[ -n "$interactive_in_fd" ]]; then
       read -r -u "$interactive_in_fd" answer || answer=""
     else
       read -r answer <"$in" || answer=""
     fi
     answer="$(trim "$answer")"
+    if (( can_toggle_view )); then
+      local answer_lc
+      answer_lc="${answer,,}"
+      case "$answer_lc" in
+        full)
+          if (( show_full_list )); then
+            note "Full USB list view is already active."
+          else
+            show_full_list=1
+            filtered_view_active=0
+            display_indexes=()
+            for i in "${!ids[@]}"; do
+              display_indexes+=("$i")
+            done
+            note "Switched to full USB list view."
+          fi
+          render_device_list=1
+          continue
+          ;;
+        focus|focused|bt|bluetooth)
+          if (( ! show_full_list )); then
+            note "Bluetooth-focused view is already active."
+          else
+            show_full_list=0
+            filtered_view_active=1
+            display_indexes=()
+            for i in "${!ids[@]}"; do
+              if (( ${is_bt_flags[$i]:-0} )); then
+                display_indexes+=("$i")
+              fi
+            done
+            if (( ${#display_indexes[@]} == 0 )); then
+              show_full_list=1
+              filtered_view_active=0
+              for i in "${!ids[@]}"; do
+                display_indexes+=("$i")
+              done
+              note "No Bluetooth-marked entries were found; staying on full USB list view."
+            else
+              note "Switched to Bluetooth-focused view."
+            fi
+          fi
+          render_device_list=1
+          continue
+          ;;
+      esac
+    fi
 
     exclude_csv=""
-    local -A seen_ids=()
-    local -a selected_indexes=()
+    vm_csv=""
+    local -A selected_vm_ids=()
+    local -a selected_vm_indexes=()
     if [[ -n "$answer" ]]; then
       answer="${answer//,/ }"
-      local token idx id
+      local token disp_idx idx id
       for token in $answer; do
         if [[ ! "$token" =~ ^[0-9]+$ ]]; then
           note "Ignoring invalid token: $token"
           continue
         fi
-        if (( token < 1 || token > ${#ids[@]} )); then
+        if (( token < 1 || token > ${#display_indexes[@]} )); then
           note "Ignoring out-of-range selection: $token"
           continue
         fi
-        idx=$((token-1))
+        disp_idx=$((token-1))
+        idx="${display_indexes[$disp_idx]}"
         id="${ids[$idx]}"
-        if [[ -z "${seen_ids[$id]:-}" ]]; then
-          exclude_csv+="${exclude_csv:+,}$id"
-          seen_ids[$id]=1
-          selected_indexes+=("$idx")
+        if [[ -z "${selected_vm_ids[$id]:-}" ]]; then
+          vm_csv+="${vm_csv:+,}$id"
+          selected_vm_ids[$id]=1
+          selected_vm_indexes+=("$idx")
         fi
       done
     fi
 
-    local -a missing_storage_ids=()
-    local sid
-    for sid in "${storage_ids_order[@]}"; do
-      if [[ -z "${seen_ids[$sid]:-}" ]]; then
-        missing_storage_ids+=("$sid")
+    local uid
+    for uid in "${unique_ids_order[@]}"; do
+      if [[ -z "${selected_vm_ids[$uid]:-}" ]]; then
+        exclude_csv+="${exclude_csv:+,}$uid"
       fi
     done
 
-    if (( ${#missing_storage_ids[@]} > 0 )); then
+    local -a selected_storage_ids=()
+    local sid
+    for sid in "${storage_ids_order[@]}"; do
+      if [[ -n "${selected_vm_ids[$sid]:-}" ]]; then
+        selected_storage_ids+=("$sid")
+      fi
+    done
+
+    if (( ${#selected_storage_ids[@]} > 0 )); then
       if (( storage_interlock_required )); then
         say
         if (( ENABLE_COLOR )); then
-          say "${C_BOLD}${C_RED}DANGER:${C_RESET} Some storage devices are NOT excluded from detach."
+          say "${C_BOLD}${C_RED}DANGER:${C_RESET} Some storage devices are selected as VM-eligible detach targets."
         else
-          say "DANGER: Some storage devices are NOT excluded from detach."
+          say "DANGER: Some storage devices are selected as VM-eligible detach targets."
         fi
         note "Detaching storage-class USB devices can disconnect active host disks and cause data loss."
-        note "Storage entries currently not kept host-bound:"
-        for sid in "${missing_storage_ids[@]}"; do
+        note "Storage entries currently selected for VM eligibility:"
+        for sid in "${selected_storage_ids[@]}"; do
           note "  - ${storage_id_to_label[$sid]}"
         done
 
         if prompt_yn "Re-enter numbers now and keep these storage devices host-bound?" Y "Storage safety"; then
           continue
         fi
-        if ! confirm_phrase "Proceeding without keeping all storage devices host-bound is risky." "I ACCEPT STORAGE RISK"; then
-          note "Risk confirmation not accepted; please choose exclusions again."
+        if ! confirm_phrase "Proceeding with storage devices marked VM-eligible is risky." "I ACCEPT STORAGE RISK"; then
+          note "Risk confirmation not accepted; please choose VM-eligible devices again."
           continue
         fi
       else
-        note "Info: some storage devices are not selected."
-        note "Current policy is Bluetooth-only (MATCH_MODE=auto with empty INCLUDE_IDS), so storage devices are not detach targets."
+        note "Info: some storage devices are selected as VM-eligible."
+        note "Current policy is Bluetooth-only (MATCH_MODE=auto with empty INCLUDE_IDS), so non-Bluetooth storage devices are not detach targets."
       fi
     fi
 
     say
-    note "Selection review (devices kept host-bound):"
-    if [[ -n "$exclude_csv" ]]; then
-      note "Selected EXCLUDE_IDS (kept on host): $exclude_csv"
+    note "Selection review:"
+    if [[ -n "$vm_csv" ]]; then
+      note "Selected VM-eligible IDs (detach targets): $vm_csv"
       local selected_idx selected_idx_text selected_idx_num
-      note "Selected entries:"
-      for selected_idx in "${selected_indexes[@]}"; do
-        selected_idx_num=$((selected_idx+1))
+      note "Selected VM-eligible entries:"
+      for selected_idx in "${selected_vm_indexes[@]}"; do
+        selected_idx_num="${display_num_by_idx[$selected_idx]:-$((selected_idx+1))}"
         selected_idx_text="[$selected_idx_num]"
         if (( ENABLE_COLOR )) && [[ -n "${index_colors[$selected_idx]:-}" ]]; then
           selected_idx_text="${index_colors[$selected_idx]}[$selected_idx_num]${C_RESET}"
@@ -5767,33 +5887,41 @@ configure_usb_bt_exclude_ids_interactive() {
         note "  - ${selected_idx_text} ${labels[$selected_idx]}"
       done
     else
-      note "No entries selected; EXCLUDE_IDS will be empty."
+      note "No entries selected as VM-eligible."
+    fi
+    if [[ -n "$exclude_csv" ]]; then
+      note "Derived EXCLUDE_IDS (kept host-bound): $exclude_csv"
+    else
+      note "Derived EXCLUDE_IDS (kept host-bound): <empty>"
     fi
     note "Mode summary per listed device:"
-    note "  $mode_host_note = selected here (stays on host)"
-    note "  $mode_vm_note = not selected (eligible for automatic detach for VM passthrough)"
+    note "  $mode_vm_note = selected here (eligible for automatic detach for VM passthrough)"
+    note "  $mode_host_note = not selected (stays on host via EXCLUDE_IDS)"
     if (( ! storage_interlock_required )); then
       note "  Note: in current Bluetooth-only policy, non-Bluetooth devices are not detach targets."
     fi
     local entry_id mode_tag
-    for i in "${!labels[@]}"; do
-      idx_text="[$((i+1))]"
+    for i in "${display_indexes[@]}"; do
+      idx_text="[${display_num_by_idx[$i]}]"
       if (( ENABLE_COLOR )) && [[ -n "${index_colors[$i]:-}" ]]; then
-        idx_text="${index_colors[$i]}[$((i+1))]${C_RESET}"
+        idx_text="${index_colors[$i]}[${display_num_by_idx[$i]}]${C_RESET}"
       fi
       entry_id="${ids[$i]}"
-      if [[ -n "${seen_ids[$entry_id]:-}" ]]; then
-        mode_tag="$mode_host_note"
-      else
+      if [[ -n "${selected_vm_ids[$entry_id]:-}" ]]; then
         mode_tag="$mode_vm_note"
+      else
+        mode_tag="$mode_host_note"
       fi
       note "  - ${idx_text} ${mode_tag} ${labels[$i]}"
     done
 
-    if prompt_yn "Apply this host-bound selection now?" Y "USB exclusion review"; then
+    if prompt_yn "Apply this VM-eligible selection now?" Y "USB exclusion review"; then
       break
     fi
     note "Selection not applied; re-enter numbers to adjust your choices."
+    if (( can_toggle_view )); then
+      note "Quick view switch: type 'full' for all USB devices or 'focus' for Bluetooth-focused entries."
+    fi
   done
   if [[ -n "$interactive_in_fd" ]]; then
     exec {interactive_in_fd}<&-
@@ -5823,10 +5951,15 @@ configure_usb_bt_exclude_ids_interactive() {
   install -o "$owner" -g "$group" -m "$mode" "$tmp" "$conf"
   rm -f "$tmp" || true
 
-  if [[ -n "$exclude_csv" ]]; then
-    say "Configured USB Bluetooth EXCLUDE_IDS: $exclude_csv"
+  if [[ -n "$vm_csv" ]]; then
+    say "Configured USB Bluetooth VM-eligible IDs: $vm_csv"
   else
-    say "Configured USB Bluetooth EXCLUDE_IDS: <empty>"
+    say "Configured USB Bluetooth VM-eligible IDs: <empty>"
+  fi
+  if [[ -n "$exclude_csv" ]]; then
+    say "Configured USB Bluetooth EXCLUDE_IDS (kept host-bound): $exclude_csv"
+  else
+    say "Configured USB Bluetooth EXCLUDE_IDS (kept host-bound): <empty>"
   fi
 }
 

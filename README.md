@@ -53,6 +53,18 @@ The script is designed to be **interactive, defensive and reversible**, so that 
 - Improved storage-risk gating behavior for USB exclusion flows:
   - strict storage interlock now activates only when policy can target non-Bluetooth devices (`MATCH_MODE=include_only` or non-empty `INCLUDE_IDS`),
   - default Bluetooth-only policy (`MATCH_MODE=auto` with empty `INCLUDE_IDS`) now reports unselected storage as informational instead of forcing risk-phrase confirmation.
+- Reversed USB exclusion picker input semantics for clearer passthrough intent:
+  - picker input now selects `VM-ELIGIBLE` (detach-target) device IDs directly,
+  - `EXCLUDE_IDS` is now derived automatically as the inverse host-bound set (unselected IDs).
+- Added optional Bluetooth-focused USB picker view with explicit full-list access:
+  - in default Bluetooth-only policy mode, picker can show a reduced Bluetooth-focused list to lower noise,
+  - picker now asks whether to show the full USB list so users can always switch to full-device visibility before selecting VM-eligible IDs,
+  - during selection, users can type `full` or `focus` to switch list views in-loop without restarting the picker.
+- Improved in-loop view-switch guidance after selection review retries:
+  - when apply is declined in toggle-capable picker mode, wizard now prints a quick reminder for `full` / `focus` commands before re-entry.
+- Updated storage-risk interlock to match VM-eligible-first input:
+  - interlock/warning now triggers when storage IDs are selected as VM-eligible detach targets,
+  - risk rejection now loops back with VM-eligible wording so users can remove storage from detach selection.
 - Added focused regression coverage for storage-risk exclusion safety:
   - new `regression/usb-storage-exclusion-regression.sh` verifies:
     - re-entry flow when storage IDs are missed,
@@ -343,7 +355,9 @@ The script supports several modes controlled by flags. By default, without any f
 
 - `--install-usb-bt-mitigation`
   - Installs only the optional USB Bluetooth mitigation (`vfio-usb-bluetooth` helper + systemd + udev + match-policy config).
-  - During install, the wizard can show a numbered USB list and let you set `EXCLUDE_IDS` interactively, including Bluetooth detection hints.
+  - During install, the wizard shows a numbered USB picker using VM-eligible-first semantics (selected IDs are detach-eligible; unselected IDs become `EXCLUDE_IDS` host-bound IDs).
+  - In Bluetooth-only policy mode, the picker can start in a Bluetooth-focused list and offers an explicit prompt to show the full USB list before selection.
+  - While entering selections, users can type `full` or `focus` to switch between full USB and Bluetooth-focused views without leaving the picker loop.
   - If storage-marked entries are not excluded, the picker adds a final danger confirmation step before allowing install flow to continue.
 
 - `--print-fish-completion`

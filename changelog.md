@@ -37,6 +37,22 @@
 - Refined storage interlock applicability for USB exclusion policy modes:
   - strict storage risk-confirmation flow now runs only when non-Bluetooth detach is policy-eligible (`MATCH_MODE=include_only` or non-empty `INCLUDE_IDS`),
   - default Bluetooth-only policy (`MATCH_MODE=auto` with empty `INCLUDE_IDS`) now emits informational storage notes without forcing risk-phrase confirmation.
+- Reworked USB exclusion picker selection model for clearer passthrough UX:
+  - picker input now selects `VM-ELIGIBLE` detach targets directly instead of selecting host-bound exclusions first,
+  - `EXCLUDE_IDS` persistence is now derived as the inverse (unselected host-bound IDs) so config behavior remains compatible.
+- Added Bluetooth-focused display mode with explicit full-list fallback in USB picker:
+  - in default Bluetooth-only policy, picker can show a reduced Bluetooth-focused list to simplify VM-eligible selection,
+  - picker now prompts to show the full USB list so users can always switch back to complete device visibility before applying.
+- Added in-loop picker view switching commands:
+  - users can now type `full` or `focus` while entering VM-eligible selections to switch list views without restarting the picker flow.
+- Improved picker retry guidance for view switching:
+  - after users decline apply in toggle-capable mode, picker now prints a quick `full` / `focus` reminder before the next entry round.
+- Updated VM-eligible picker indexing/review behavior for focused view:
+  - selection numbers are now mapped to the currently displayed list (focused or full),
+  - selection review now uses the same active view indexing so confirmation output matches chosen view mode.
+- Updated storage interlock wording/trigger to align with VM-eligible-first flow:
+  - interlock now triggers when storage IDs are selected as VM-eligible detach targets,
+  - rejection path now loops with VM-eligible wording (`please choose VM-eligible devices again`) for clearer correction flow.
 - Added `regression/usb-storage-exclusion-regression.sh`:
   - validates storage-risk exclusion interlock behavior for re-entry, accepted risk phrase, and rejected risk-phrase loop flows.
 - Added deterministic test hooks for USB exclusion picker regression control:
