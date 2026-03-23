@@ -1,4 +1,8 @@
-[![vfio.sh banner](icon/images.webp)](icon/images.webp)
+<p align="center">
+  <a href="icon/images.webp">
+    <img src="icon/images.webp" alt="vfio.sh banner" width="100%">
+  </a>
+</p>
 
 # vfio.sh – Safe multi‑GPU VFIO passthrough helper
 
@@ -19,6 +23,7 @@ The script is designed to be **interactive, defensive and reversible**, so that 
 
 ## Unreleased
 - Added a top README banner image with a relative clickable path (`icon/images.webp`) so documentation paths stay portable and non-hardcoded.
+- Expanded the README top banner display to full-width rendering for better visibility while keeping the same relative clickable path.
 - Add upcoming updates below this line as new work lands.
 
 
