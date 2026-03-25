@@ -1,5 +1,12 @@
 # Changelog
 ## Unreleased
+- Hardened openSUSE cmdline persistence/root metadata handling in `vfio.sh`:
+  - `systemd_boot_add_kernel_params()` now re-applies existing `/etc/kernel/cmdline` boot metadata (`root=`, `rootflags=`, `rootfstype=`, `resume=`, `systemd.machine_id`) before final safety checks so additive VFIO/IOMMU updates do not drop root tokens.
+  - persistence path now also uses current-mount metadata fallback (`bls_current_mount_root_token`, `bls_current_mount_rootflags_token`) before triggering the root-token safety abort.
+  - `sync_bls_entries_from_kernel_cmdline()` now attempts the same current-mount root/rootflags fallback before skipping BLS sync due missing `root=`.
+- Updated `regression/custom-kernel-params-regression.sh` coverage:
+  - renamed sdbootutil fallback fixture entry names to non-fallback filenames so fallback-sync assertions validate the intended sync path,
+  - added static coverage checks for the new root/rootflags-preserving persistence and current-mount fallback wiring.
 - Fixed a prelogin graphics-adaptation crash in generated daemon policy logic:
   - removed an invalid `: "$host_gpu_bdf" "$guest_gpu_bdf"` no-op reference from daemon `apply_policy_once()` generation that could trigger `set -u` unbound-variable failure at boot.
 - Extended `regression/protocol-mode-regression.sh` with a guard for that crash path:

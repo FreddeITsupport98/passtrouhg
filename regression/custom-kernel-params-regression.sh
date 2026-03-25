@@ -318,7 +318,7 @@ cat >"$fallback_cmdline_fixture" <<'EOF'
 quiet iommu=pt rd.driver.pre=vfio-pci selinux=0 apparmor=0
 EOF
 
-fallback_entry="$fallback_bls_dir/system-opensuse-fallback.conf"
+fallback_entry="$fallback_bls_dir/system-opensuse-sync-failure.conf"
 cat >"$fallback_entry" <<'EOF'
 title openSUSE fallback entry
 linux /vmlinuz-fallback
@@ -387,7 +387,7 @@ cat >"$partial_cmdline_fixture" <<'EOF'
 quiet iommu=pt rd.driver.pre=vfio-pci selinux=0 apparmor=0
 EOF
 
-partial_entry="$partial_bls_dir/system-opensuse-partial-fallback.conf"
+partial_entry="$partial_bls_dir/system-opensuse-sync-partial-failure.conf"
 cat >"$partial_entry" <<'EOF'
 title openSUSE partial fallback entry
 linux /vmlinuz-partial-fallback
@@ -508,6 +508,18 @@ assert_contains_file \
 assert_contains_file \
   "openSUSE persistence flow calls custom-kernel helper" \
   "add_custom_kernel_params_interactive \"\$new_cmdline\" \"/etc/kernel/cmdline (persistence)\"" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
+  "openSUSE persistence flow preserves root metadata from existing kernel cmdline" \
+  "cmdline_add_boot_metadata_tokens_from_options \"\$new_cmdline\" \"\$cmdline_content\"" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
+  "openSUSE persistence flow includes current-mount root fallback tokens" \
+  "mount_root_tok=\"\$(bls_current_mount_root_token 2>/dev/null || true)\"" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
+  "BLS synchronization includes current-mount root fallback tokens" \
+  "base_cmdline=\"\$(cmdline_set_key_value_token \"\$base_cmdline\" \"\$mount_root_tok\")\"" \
   "$VFIO_SCRIPT"
 assert_contains_file \
   "systemd-boot current-entry flow calls custom-kernel helper" \

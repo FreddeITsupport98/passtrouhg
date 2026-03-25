@@ -5316,7 +5316,18 @@ sync_bls_entries_from_kernel_cmdline() {
     base_cmdline="$(cmdline_add_boot_metadata_tokens_from_options "$base_cmdline" "$fallback_metadata_opts")"
   fi
   if ! cmdline_get_key_value_token "$base_cmdline" "root" >/dev/null 2>&1; then
-    note "Skipping BLS entry sync: unable to determine root=... metadata from $cmdline_file or BLS backups."
+    local mount_root_tok mount_rootflags_tok
+    mount_root_tok="$(bls_current_mount_root_token 2>/dev/null || true)"
+    mount_rootflags_tok="$(bls_current_mount_rootflags_token 2>/dev/null || true)"
+    if [[ -n "$mount_root_tok" ]]; then
+      base_cmdline="$(cmdline_set_key_value_token "$base_cmdline" "$mount_root_tok")"
+    fi
+    if [[ -n "$mount_rootflags_tok" ]]; then
+      base_cmdline="$(cmdline_set_key_value_token "$base_cmdline" "$mount_rootflags_tok")"
+    fi
+  fi
+  if ! cmdline_get_key_value_token "$base_cmdline" "root" >/dev/null 2>&1; then
+    note "Skipping BLS entry sync: unable to determine root=... metadata from $cmdline_file, BLS backups, or current mount metadata."
     return 1
   fi
   local base_root_tok base_rootflags_tok base_rootfstype_tok base_resume_tok base_machine_id_tok
@@ -5859,6 +5870,12 @@ systemd_boot_add_kernel_params() {
     
     local cmdline_content
     cmdline_content="$(cat /etc/kernel/cmdline)"
+    local cmdline_root_tok cmdline_rootflags_tok cmdline_rootfstype_tok cmdline_resume_tok cmdline_machine_id_tok
+    cmdline_root_tok="$(cmdline_get_key_value_token "$cmdline_content" "root" 2>/dev/null || true)"
+    cmdline_rootflags_tok="$(cmdline_get_key_value_token "$cmdline_content" "rootflags" 2>/dev/null || true)"
+    cmdline_rootfstype_tok="$(cmdline_get_key_value_token "$cmdline_content" "rootfstype" 2>/dev/null || true)"
+    cmdline_resume_tok="$(cmdline_get_key_value_token "$cmdline_content" "resume" 2>/dev/null || true)"
+    cmdline_machine_id_tok="$(cmdline_get_key_value_token "$cmdline_content" "systemd.machine_id" 2>/dev/null || true)"
     # Base params: IOMMU and any extras discovered earlier. Framebuffer
     # mitigation (video=efifb:off, etc.) is handled by a dedicated prompt
     # below so users understand why it is needed and can skip it if they
@@ -6012,6 +6029,19 @@ systemd_boot_add_kernel_params() {
       new_cmdline="$(add_param_once "$new_cmdline" "pcie_acs_override=downstream,multifunction")"
     fi
     new_cmdline="$(add_custom_kernel_params_interactive "$new_cmdline" "/etc/kernel/cmdline (persistence)")"
+
+    # Preserve current persisted boot metadata unless explicitly unavailable.
+    # This keeps root/rootflags stable across additive parameter updates.
+    if [[ -n "$cmdline_root_tok" || -n "$cmdline_rootflags_tok" || -n "$cmdline_rootfstype_tok" || -n "$cmdline_resume_tok" || -n "$cmdline_machine_id_tok" ]]; then
+      new_cmdline="$(cmdline_add_boot_metadata_tokens_from_options "$new_cmdline" "$cmdline_content")"
+    fi
+    if ! cmdline_get_key_value_token "$new_cmdline" "root" >/dev/null 2>&1; then
+      local mount_root_tok mount_rootflags_tok
+      mount_root_tok="$(bls_current_mount_root_token 2>/dev/null || true)"
+      mount_rootflags_tok="$(bls_current_mount_rootflags_token 2>/dev/null || true)"
+      [[ -n "$mount_root_tok" ]] && new_cmdline="$(cmdline_set_key_value_token "$new_cmdline" "$mount_root_tok")"
+      [[ -n "$mount_rootflags_tok" ]] && new_cmdline="$(cmdline_set_key_value_token "$new_cmdline" "$mount_rootflags_tok")"
+    fi
     if ! cmdline_get_key_value_token "$new_cmdline" "root" >/dev/null 2>&1; then
       local recovered_boot_opts recovered_cmdline recovered_root_tok
       recovered_boot_opts="$(bls_find_boot_metadata_options 2>/dev/null || true)"

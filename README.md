@@ -22,6 +22,8 @@ The script is designed to be **interactive, defensive and reversible**, so that 
 > **Important:** This script does *not* create or modify VMs. It only prepares your host so that a hypervisor (libvirt/qemu, etc.) can passthrough the selected PCI devices.
 
 ## Unreleased
+- Hardened openSUSE `/etc/kernel/cmdline` persistence updates to preserve existing boot metadata (`root=`, `rootflags=`, `rootfstype=`, `resume=`, `systemd.machine_id`) while adding VFIO/IOMMU parameters.
+- Added additional current-mount metadata fallback in BLS sync/persistence paths so cmdline updates avoid dropping root metadata and avoid false safety-abort skips.
 - Fixed a boot-time graphics protocol daemon crash path caused by an undefined variable reference in generated daemon policy code (`host_gpu_bdf`/`guest_gpu_bdf` no-op line removed).
 - Deferred graphics protocol activation so installer runs no longer switch Wayland/X11 behavior live during wizard execution.
 - Updated graphics protocol daemon install flow to enable on boot without immediate start, so protocol adaptation takes effect after reboot.
