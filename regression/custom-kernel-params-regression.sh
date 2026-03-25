@@ -532,8 +532,16 @@ assert_contains_file \
   "mount_root_tok=\"\$(bls_current_mount_root_token 2>/dev/null || true)\"" \
   "$VFIO_SCRIPT"
 assert_contains_file \
+  "openSUSE persistence flow includes /proc/cmdline root fallback tokens" \
+  "new_cmdline=\"\$(cmdline_add_boot_metadata_tokens_from_options \"\$new_cmdline\" \"\$running_boot_opts\")\"" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
   "BLS synchronization includes current-mount root fallback tokens" \
   "base_cmdline=\"\$(cmdline_set_key_value_token \"\$base_cmdline\" \"\$mount_root_tok\")\"" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
+  "BLS synchronization includes /proc/cmdline root fallback tokens" \
+  "base_cmdline=\"\$(cmdline_add_boot_metadata_tokens_from_options \"\$base_cmdline\" \"\$running_boot_opts\")\"" \
   "$VFIO_SCRIPT"
 assert_contains_file \
   "systemd-boot current-entry flow calls custom-kernel helper" \

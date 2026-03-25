@@ -5347,7 +5347,18 @@ sync_bls_entries_from_kernel_cmdline() {
     fi
   fi
   if ! cmdline_get_key_value_token "$base_cmdline" "root" >/dev/null 2>&1; then
-    note "Skipping BLS entry sync: unable to determine root=... metadata from $cmdline_file, BLS backups, or current mount metadata."
+    local running_boot_opts running_root_tok
+    running_boot_opts="$(cat /proc/cmdline 2>/dev/null || true)"
+    if [[ -n "$running_boot_opts" ]]; then
+      base_cmdline="$(cmdline_add_boot_metadata_tokens_from_options "$base_cmdline" "$running_boot_opts")"
+      running_root_tok="$(cmdline_get_key_value_token "$base_cmdline" "root" 2>/dev/null || true)"
+      if [[ -n "$running_root_tok" ]]; then
+        note "Recovered root boot metadata for BLS sync baseline from running /proc/cmdline."
+      fi
+    fi
+  fi
+  if ! cmdline_get_key_value_token "$base_cmdline" "root" >/dev/null 2>&1; then
+    note "Skipping BLS entry sync: unable to determine root=... metadata from $cmdline_file, BLS backups, current mount metadata, or /proc/cmdline."
     return 1
   fi
   local base_root_tok base_rootflags_tok base_rootfstype_tok base_resume_tok base_machine_id_tok
@@ -6061,6 +6072,17 @@ systemd_boot_add_kernel_params() {
       mount_rootflags_tok="$(bls_current_mount_rootflags_token 2>/dev/null || true)"
       [[ -n "$mount_root_tok" ]] && new_cmdline="$(cmdline_set_key_value_token "$new_cmdline" "$mount_root_tok")"
       [[ -n "$mount_rootflags_tok" ]] && new_cmdline="$(cmdline_set_key_value_token "$new_cmdline" "$mount_rootflags_tok")"
+    fi
+    if ! cmdline_get_key_value_token "$new_cmdline" "root" >/dev/null 2>&1; then
+      local running_boot_opts running_root_tok
+      running_boot_opts="$(cat /proc/cmdline 2>/dev/null || true)"
+      if [[ -n "$running_boot_opts" ]]; then
+        new_cmdline="$(cmdline_add_boot_metadata_tokens_from_options "$new_cmdline" "$running_boot_opts")"
+        running_root_tok="$(cmdline_get_key_value_token "$new_cmdline" "root" 2>/dev/null || true)"
+        if [[ -n "$running_root_tok" ]]; then
+          note "Recovered root boot metadata for /etc/kernel/cmdline candidate from running /proc/cmdline."
+        fi
+      fi
     fi
     if ! cmdline_get_key_value_token "$new_cmdline" "root" >/dev/null 2>&1; then
       local recovered_boot_opts recovered_cmdline recovered_root_tok

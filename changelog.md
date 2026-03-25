@@ -1,5 +1,11 @@
 # Changelog
 ## Unreleased
+- Hardened openSUSE root-metadata safety fallback in `vfio.sh`:
+  - openSUSE `/etc/kernel/cmdline` persistence path now attempts recovery from running `/proc/cmdline` when `root=` metadata is still missing after existing cmdline/BLS/current-mount fallback stages.
+  - `sync_bls_entries_from_kernel_cmdline()` now also attempts `/proc/cmdline` metadata recovery before emitting root-missing skip behavior.
+  - updated skip diagnostics now explicitly include `/proc/cmdline` among attempted metadata sources.
+- Updated `regression/custom-kernel-params-regression.sh`:
+  - added assertions that guard `/proc/cmdline` metadata fallback wiring for both persistence and BLS synchronization paths.
 - Hardened openSUSE bootloader detection in `vfio.sh` for GRUB snapshot/BLS layouts:
   - `detect_bootloader()` now classifies openSUSE GRUB systems as `grub2-bls` when `/etc/kernel/cmdline` and Boot Loader Spec entries with `options ... root=` are present, even if `LOADER_TYPE=grub2-bls` / `GRUB_ENABLE_BLSCFG=true` markers are missing.
   - prevents cmdline/VFIO parameter updates from silently falling back to legacy `/etc/default/grub`-only edits while active BLS boot entries remain unchanged.
