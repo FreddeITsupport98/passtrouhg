@@ -214,6 +214,10 @@ assert_not_contains_text \
   "graphics protocol daemon install does not use immediate enable --now" \
   'run systemctl enable --now vfio-graphics-protocold.service' \
   "$vfio_source"
+assert_not_contains_text \
+  "graphics protocol daemon template does not reference undefined host_gpu_bdf no-op" \
+  ": \"\$host_gpu_bdf\" \"\$guest_gpu_bdf\"" \
+  "$vfio_source"
 
 # --- Test 7: protocol-mode scheduling message remains at end of install flow.
 assert_line_order \

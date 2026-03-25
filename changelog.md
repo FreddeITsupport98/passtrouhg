@@ -1,5 +1,9 @@
 # Changelog
 ## Unreleased
+- Fixed a prelogin graphics-adaptation crash in generated daemon policy logic:
+  - removed an invalid `: "$host_gpu_bdf" "$guest_gpu_bdf"` no-op reference from daemon `apply_policy_once()` generation that could trigger `set -u` unbound-variable failure at boot.
+- Extended `regression/protocol-mode-regression.sh` with a guard for that crash path:
+  - now asserts generated source no longer contains the undefined host/guest no-op reference pattern.
 - Extended `regression/protocol-mode-regression.sh` deferred-activation coverage:
   - validates installer protocol-mode application remains deferred-only (no live X11/Wayland side effects during install),
   - validates graphics protocol daemon install wiring uses `systemctl enable` without `--now`,

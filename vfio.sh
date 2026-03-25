@@ -6961,7 +6961,6 @@ apply_policy_once() {
   local mode host guest session_type inferred_prelogin action prev
   mode="$(trim "${GRAPHICS_PROTOCOL_MODE:-AUTO}")"
   mode="${mode^^}"
-  : "$host_gpu_bdf" "$guest_gpu_bdf"
   host="$(trim "${HOST_GPU_BDF:-}")"
   guest="$(trim "${GUEST_GPU_BDF:-}")"
   session_type="unknown"
