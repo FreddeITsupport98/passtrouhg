@@ -1,5 +1,10 @@
 # Changelog
 ## Unreleased
+- Hardened openSUSE bootloader detection in `vfio.sh` for GRUB snapshot/BLS layouts:
+  - `detect_bootloader()` now classifies openSUSE GRUB systems as `grub2-bls` when `/etc/kernel/cmdline` and Boot Loader Spec entries with `options ... root=` are present, even if `LOADER_TYPE=grub2-bls` / `GRUB_ENABLE_BLSCFG=true` markers are missing.
+  - prevents cmdline/VFIO parameter updates from silently falling back to legacy `/etc/default/grub`-only edits while active BLS boot entries remain unchanged.
+- Updated `regression/custom-kernel-params-regression.sh`:
+  - added explicit assertions that guard the new openSUSE GRUB+BLS fallback detection wiring in `detect_bootloader()`.
 - Hardened openSUSE cmdline persistence/root metadata handling in `vfio.sh`:
   - `systemd_boot_add_kernel_params()` now re-applies existing `/etc/kernel/cmdline` boot metadata (`root=`, `rootflags=`, `rootfstype=`, `resume=`, `systemd.machine_id`) before final safety checks so additive VFIO/IOMMU updates do not drop root tokens.
   - persistence path now also uses current-mount metadata fallback (`bls_current_mount_root_token`, `bls_current_mount_rootflags_token`) before triggering the root-token safety abort.

@@ -142,14 +142,29 @@ assert_eq \
   "" \
   "$unredirected_ui_lines"
 
-# Test 4: call-site wiring coverage for all boot-option flows.
+# Test 4: detect_bootloader keeps openSUSE GRUB+BLS fallback classification.
+detect_block="$(sed -n '/^detect_bootloader()/,/^}/p' "$VFIO_SCRIPT")"
+assert_contains_text \
+  "detect_bootloader checks /etc/kernel/cmdline in openSUSE GRUB+BLS heuristic" \
+  "if is_opensuse_like && [[ -f /etc/kernel/cmdline ]] && [[ -d /boot/grub || -d /boot/grub2 ]]; then" \
+  "$detect_block"
+assert_contains_text \
+  "detect_bootloader openSUSE GRUB+BLS heuristic inspects BLS options lines for root token" \
+  "grep -qE '^options[[:space:]]+.*\\<root='" \
+  "$detect_block"
+assert_contains_text \
+  "detect_bootloader openSUSE GRUB+BLS heuristic resolves to grub2-bls" \
+  "echo \"grub2-bls\"" \
+  "$detect_block"
+
+# Test 5: call-site wiring coverage for all boot-option flows.
 preview_rc=0
 preview_cmdline_change_interactive "quiet iommu=pt" "quiet iommu=pt amd_iommu=on" "GRUB kernel cmdline" >/dev/null 2>"$tmp_dir/preview.stderr" || preview_rc=$?
 assert_eq \
   "preview_cmdline_change_interactive decline path returns non-zero" \
   "1" \
   "$preview_rc"
-# Test 5: Boot-VGA helper behavior stays additive-first and falls back when risk is detected.
+# Test 6: Boot-VGA helper behavior stays additive-first and falls back when risk is detected.
 first_boot_vga_probe_bdf() {
   local f
   for f in /sys/bus/pci/devices/*/boot_vga; do
@@ -216,7 +231,7 @@ EOF
 
   PATH="$old_path"
 fi
-# Test 6: BLS sync keeps snapshot root metadata while applying persisted cmdline baseline.
+# Test 7: BLS sync keeps snapshot root metadata while applying persisted cmdline baseline.
 bls_dir="$tmp_dir/bls-entries"
 mkdir -p "$bls_dir"
 cmdline_fixture="$tmp_dir/kernel-cmdline"
@@ -310,7 +325,7 @@ assert_cmdline_lacks_token \
   "BLS sync removes stale entry B token" \
   "legacy=1" \
   "$opts_b"
-# Test 7: sdbootutil failure still triggers direct BLS option synchronization fallback.
+# Test 8: sdbootutil failure still triggers direct BLS option synchronization fallback.
 fallback_bls_dir="$tmp_dir/bls-fallback-entries"
 mkdir -p "$fallback_bls_dir"
 fallback_cmdline_fixture="$tmp_dir/kernel-cmdline-fallback"
@@ -379,7 +394,7 @@ assert_cmdline_lacks_token \
   "sdbootutil failure fallback removes stale splash token" \
   "splash=silent" \
   "$fallback_opts"
-# Test 8: partial sdbootutil failure still triggers direct BLS option synchronization fallback.
+# Test 9: partial sdbootutil failure still triggers direct BLS option synchronization fallback.
 partial_bls_dir="$tmp_dir/bls-partial-fallback-entries"
 mkdir -p "$partial_bls_dir"
 partial_cmdline_fixture="$tmp_dir/kernel-cmdline-partial-fallback"
@@ -459,8 +474,7 @@ assert_cmdline_lacks_token \
   "splash=silent" \
   "$partial_opts"
 
-# Test 9: call-site wiring coverage for all boot-option flows.
-# Test 5: call-site wiring coverage for all boot-option flows.
+# Test 10: call-site wiring coverage for all boot-option flows.
 assert_contains_file \
   "preview helper function exists" \
   "preview_cmdline_change_interactive()" \

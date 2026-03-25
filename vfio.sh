@@ -4310,6 +4310,26 @@ detect_bootloader() {
       return 0
     fi
   fi
+  # Some openSUSE GRUB deployments still boot via Boot Loader Spec entries
+  # even when GRUB_ENABLE_BLSCFG/LOADER_TYPE markers are absent or stale.
+  # If /etc/kernel/cmdline exists and loader entries contain options with
+  # root=..., treat this as GRUB2-BLS so we follow the safe cmdline+BLS flow.
+  if is_opensuse_like && [[ -f /etc/kernel/cmdline ]] && [[ -d /boot/grub || -d /boot/grub2 ]]; then
+    local bls_dir bls_entry
+    bls_dir="$(systemd_boot_entries_dir 2>/dev/null || true)"
+    if [[ -n "$bls_dir" ]]; then
+      shopt -s nullglob
+      for bls_entry in "$bls_dir"/system-*.conf "$bls_dir"/grub-*.conf "$bls_dir"/*.conf; do
+        [[ -f "$bls_entry" ]] || continue
+        if grep -qE '^options[[:space:]]+.*\<root=' "$bls_entry" 2>/dev/null; then
+          shopt -u nullglob
+          echo "grub2-bls"
+          return 0
+        fi
+      done
+      shopt -u nullglob
+    fi
+  fi
 
   # 3) Fallback: Check for systemd-boot-style config directories directly
   if [[ -d /boot/loader/entries || -d /efi/loader/entries || -d /boot/efi/loader/entries ]]; then

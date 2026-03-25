@@ -22,6 +22,8 @@ The script is designed to be **interactive, defensive and reversible**, so that 
 > **Important:** This script does *not* create or modify VMs. It only prepares your host so that a hypervisor (libvirt/qemu, etc.) can passthrough the selected PCI devices.
 
 ## Unreleased
+- Hardened openSUSE GRUB snapshot/BLS bootloader detection so systems with active Boot Loader Spec entries are classified as `grub2-bls` even when explicit BLS markers are missing, preventing VFIO cmdline updates from being silently limited to legacy `/etc/default/grub` edits.
+- Added regression guard coverage to keep the openSUSE GRUB+BLS fallback detection path in `detect_bootloader()` from regressing.
 - Hardened openSUSE `/etc/kernel/cmdline` persistence updates to preserve existing boot metadata (`root=`, `rootflags=`, `rootfstype=`, `resume=`, `systemd.machine_id`) while adding VFIO/IOMMU parameters.
 - Added additional current-mount metadata fallback in BLS sync/persistence paths so cmdline updates avoid dropping root metadata and avoid false safety-abort skips.
 - Fixed a boot-time graphics protocol daemon crash path caused by an undefined variable reference in generated daemon policy code (`host_gpu_bdf`/`guest_gpu_bdf` no-op line removed).
