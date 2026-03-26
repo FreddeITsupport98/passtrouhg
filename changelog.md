@@ -1,5 +1,22 @@
 # Changelog
 ## Unreleased
+- Hardened cmdline token parsing in `vfio.sh` against inherited non-default shell `IFS`:
+  - `cmdline_get_key_value_token`, `cmdline_contains_exact_token`, `cmdline_remove_key_value_tokens`, and related cmdline token-removal helpers now force canonical whitespace splitting internally.
+  - prevents false `root=` detection failures in openSUSE `/etc/kernel/cmdline` persistence and `sync_bls_entries_from_kernel_cmdline()` flows when shell word-splitting state is non-standard.
+- Updated `regression/custom-kernel-params-regression.sh`:
+  - added a functional BLS-sync scenario that forces non-space global `IFS` and verifies root metadata preservation plus baseline VFIO/IOMMU option propagation.
+- Added read-only BLS token trace mode in `vfio.sh`:
+  - new `--debug-cmdline-tokens` mode now traces baseline and per-entry `root`/`rootflags` source selection used by `sync_bls_entries_from_kernel_cmdline()`.
+  - mode forces dry-run behavior so token-source diagnostics can run without mutating Boot Loader Spec entry files.
+- Extended BLS token trace mode in `vfio.sh`:
+  - added optional `--entry` basename glob filtering for `--debug-cmdline-tokens` runs so tracing can be scoped to matching BLS entry files.
+  - added parse-time validation that rejects empty/whitespace-only `--entry` patterns (`--entry=` / `--entry ''` / `--entry '   '`) with an explicit non-empty pattern error.
+  - added machine-readable output for `--debug-cmdline-tokens --json` with `mode`, `entry_filter`, `exit_code`, and ordered `lines`.
+- Updated `regression/custom-kernel-params-regression.sh`:
+  - added functional coverage that validates `--debug-cmdline-tokens` mode exits cleanly, emits representative baseline/per-entry debug source lines, and keeps BLS entry options unchanged.
+  - added functional coverage for `--debug-cmdline-tokens --json` with `--entry` filtering and assertions that non-matching entry traces are excluded.
+  - added functional parser coverage for empty/whitespace-only `--entry` rejection in both `--entry=` and split-argument forms.
+  - added static wiring assertions for parser and main-dispatch integration of `--debug-cmdline-tokens`.
 - Hardened openSUSE root-metadata safety fallback in `vfio.sh`:
   - openSUSE `/etc/kernel/cmdline` persistence path now attempts recovery from running `/proc/cmdline` when `root=` metadata is still missing after existing cmdline/BLS/current-mount fallback stages.
   - `sync_bls_entries_from_kernel_cmdline()` now also attempts `/proc/cmdline` metadata recovery before emitting root-missing skip behavior.

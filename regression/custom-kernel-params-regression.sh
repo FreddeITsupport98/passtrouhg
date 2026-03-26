@@ -33,6 +33,15 @@ assert_eq() {
     record_failure "$name"
   fi
 }
+assert_not_contains_text() {
+  local name="$1" pattern="$2" haystack="$3"
+  if grep -Fq -- "$pattern" <<<"$haystack"; then
+    printf 'FAIL: %s (unexpected pattern found: %s)\n' "$name" "$pattern" >&2
+    record_failure "$name"
+  else
+    printf 'PASS: %s\n' "$name"
+  fi
+}
 
 assert_contains_text() {
   local name="$1" pattern="$2" haystack="$3"
@@ -65,6 +74,7 @@ assert_not_contains_file() {
 assert_cmdline_has_token() {
   local name="$1" token="$2" cmdline="$3"
   local found=0 tok
+  local IFS=$' \t\n'
   for tok in $cmdline; do
     if [[ "$tok" == "$token" ]]; then
       found=1
@@ -81,6 +91,7 @@ assert_cmdline_has_token() {
 assert_cmdline_lacks_token() {
   local name="$1" token="$2" cmdline="$3"
   local tok
+  local IFS=$' \t\n'
   for tok in $cmdline; do
     if [[ "$tok" == "$token" ]]; then
       printf 'FAIL: %s (unexpected token present: %s)\n' "$name" "$token" >&2
@@ -624,12 +635,237 @@ assert_cmdline_lacks_token \
   "entry-root fallback removes stale splash token from entry" \
   "splash=silent" \
   "$entry_root_opts"
+# Test 12: BLS sync remains root-metadata-aware even when global IFS is non-default.
+ifs_bls_dir="$tmp_dir/bls-ifs-root-recovery-entries"
+mkdir -p "$ifs_bls_dir"
+ifs_cmdline_fixture="$tmp_dir/kernel-cmdline-ifs-root-recovery"
+cat >"$ifs_cmdline_fixture" <<'EOF'
+quiet iommu=pt rd.driver.pre=vfio-pci root=UUID=IFSROOT rootflags=subvol=@/.snapshots/88/snapshot
+EOF
 
-# Test 12: call-site wiring coverage for all boot-option flows.
+ifs_entry="$ifs_bls_dir/system-opensuse-ifs-root-recovery.conf"
+cat >"$ifs_entry" <<'EOF'
+title openSUSE ifs-root recovery entry
+linux /vmlinuz-ifs-root-recovery
+initrd /initrd-ifs-root-recovery
+options splash=silent ifslegacy=1 root=UUID=IFSROOT rootflags=subvol=@/.snapshots/88/snapshot rw
+EOF
+
+is_opensuse_like() { return 0; }
+detect_bootloader() { printf 'grub2-bls\n'; }
+systemd_boot_entries_dir() { printf '%s\n' "$ifs_bls_dir"; }
+kernel_cmdline_persistence_file() { printf '%s\n' "$ifs_cmdline_fixture"; }
+bls_find_boot_metadata_options() { return 1; }
+bls_current_mount_root_token() { return 1; }
+bls_current_mount_rootflags_token() { return 1; }
+
+old_ifs="$IFS"
+IFS=','
+ifs_sync_rc=0
+sync_bls_entries_from_kernel_cmdline >"$tmp_dir/ifs-root-sync.stdout" 2>"$tmp_dir/ifs-root-sync.stderr" || ifs_sync_rc=$?
+IFS="$old_ifs"
+
+assert_eq \
+  "IFS-hardened BLS sync exits successfully when shell IFS omits spaces" \
+  "0" \
+  "$ifs_sync_rc"
+
+ifs_opts="$(grep -m1 -E '^options[[:space:]]+' "$ifs_entry" | sed -E 's/^options[[:space:]]+//')"
+assert_cmdline_has_token \
+  "IFS-hardened BLS sync preserves entry root token" \
+  "root=UUID=IFSROOT" \
+  "$ifs_opts"
+assert_cmdline_has_token \
+  "IFS-hardened BLS sync preserves entry rootflags token" \
+  "rootflags=subvol=@/.snapshots/88/snapshot" \
+  "$ifs_opts"
+assert_cmdline_has_token \
+  "IFS-hardened BLS sync applies baseline iommu token" \
+  "iommu=pt" \
+  "$ifs_opts"
+assert_cmdline_has_token \
+  "IFS-hardened BLS sync applies baseline rd.driver.pre token" \
+  "rd.driver.pre=vfio-pci" \
+  "$ifs_opts"
+assert_cmdline_lacks_token \
+  "IFS-hardened BLS sync removes stale legacy token" \
+  "ifslegacy=1" \
+  "$ifs_opts"
+assert_cmdline_lacks_token \
+  "IFS-hardened BLS sync removes stale splash token" \
+  "splash=silent" \
+  "$ifs_opts"
+# Test 13: debug-cmdline-tokens mode traces root/rootflags source selection without writing entry files.
+debug_bls_dir="$tmp_dir/bls-debug-token-trace-entries"
+mkdir -p "$debug_bls_dir"
+debug_cmdline_fixture="$tmp_dir/kernel-cmdline-debug-token-trace"
+cat >"$debug_cmdline_fixture" <<'EOF'
+quiet iommu=pt rd.driver.pre=vfio-pci root=UUID=DBGBASE rootflags=subvol=@/.snapshots/11/snapshot
+EOF
+
+debug_entry_a="$debug_bls_dir/system-opensuse-debug-a.conf"
+debug_entry_b="$debug_bls_dir/system-opensuse-debug-b.conf"
+cat >"$debug_entry_a" <<'EOF'
+title openSUSE debug token trace entry A
+linux /vmlinuz-debug-a
+initrd /initrd-debug-a
+options splash=silent dbglegacy=1 root=UUID=DBGENTRY rootflags=subvol=@/.snapshots/44/snapshot rw
+EOF
+cat >"$debug_entry_b" <<'EOF'
+title openSUSE debug token trace entry B
+linux /vmlinuz-debug-b
+initrd /initrd-debug-b
+options splash=silent dbglegacy=2 rw
+EOF
+
+debug_opts_a_before="$(grep -m1 -E '^options[[:space:]]+' "$debug_entry_a" | sed -E 's/^options[[:space:]]+//')"
+debug_opts_b_before="$(grep -m1 -E '^options[[:space:]]+' "$debug_entry_b" | sed -E 's/^options[[:space:]]+//')"
+
+debug_mode_rc=0
+(
+  is_opensuse_like() { return 0; }
+  detect_bootloader() { printf 'grub2-bls\n'; }
+  systemd_boot_entries_dir() { printf '%s\n' "$debug_bls_dir"; }
+  kernel_cmdline_persistence_file() { printf '%s\n' "$debug_cmdline_fixture"; }
+  bls_find_boot_metadata_options() { return 1; }
+  debug_bls_cmdline_tokens
+) >"$tmp_dir/debug-cmdline-tokens.stdout" 2>"$tmp_dir/debug-cmdline-tokens.stderr" || debug_mode_rc=$?
+
+assert_eq \
+  "debug-cmdline-tokens mode exits successfully" \
+  "0" \
+  "$debug_mode_rc"
+
+debug_trace_output="$(cat "$tmp_dir/debug-cmdline-tokens.stdout")"
+assert_contains_text \
+  "debug-cmdline-tokens mode prints read-only trace banner" \
+  "Tracing root/rootflags source selection in read-only dry-run mode." \
+  "$debug_trace_output"
+assert_contains_text \
+  "debug-cmdline-tokens reports baseline root source from kernel cmdline file" \
+  "DEBUG[BLS baseline]: root source=kernel_cmdline_file token=root=UUID=DBGBASE" \
+  "$debug_trace_output"
+assert_contains_text \
+  "debug-cmdline-tokens reports baseline rootflags source from kernel cmdline file" \
+  "DEBUG[BLS baseline]: rootflags source=kernel_cmdline_file token=rootflags=subvol=@/.snapshots/11/snapshot" \
+  "$debug_trace_output"
+assert_contains_text \
+  "debug-cmdline-tokens reports per-entry root source from entry options when present" \
+  "DEBUG[BLS entry system-opensuse-debug-a.conf]: root source=entry_options token=root=UUID=DBGENTRY" \
+  "$debug_trace_output"
+assert_contains_text \
+  "debug-cmdline-tokens reports per-entry root source fallback to baseline when entry root is missing" \
+  "DEBUG[BLS entry system-opensuse-debug-b.conf]: root source=baseline_cmdline token=root=UUID=DBGBASE" \
+  "$debug_trace_output"
+assert_contains_text \
+  "debug-cmdline-tokens reports per-entry rootflags fallback to baseline when entry rootflags are missing" \
+  "DEBUG[BLS entry system-opensuse-debug-b.conf]: rootflags source=baseline_cmdline token=rootflags=subvol=@/.snapshots/11/snapshot" \
+  "$debug_trace_output"
+
+debug_opts_a_after="$(grep -m1 -E '^options[[:space:]]+' "$debug_entry_a" | sed -E 's/^options[[:space:]]+//')"
+debug_opts_b_after="$(grep -m1 -E '^options[[:space:]]+' "$debug_entry_b" | sed -E 's/^options[[:space:]]+//')"
+assert_eq \
+  "debug-cmdline-tokens mode keeps entry A options unchanged (dry-run)" \
+  "$debug_opts_a_before" \
+  "$debug_opts_a_after"
+assert_eq \
+  "debug-cmdline-tokens mode keeps entry B options unchanged (dry-run)" \
+  "$debug_opts_b_before" \
+  "$debug_opts_b_after"
+# Test 14: debug-cmdline-tokens JSON output honors --entry filtering and stays machine-readable.
+debug_json_mode_rc=0
+(
+  is_opensuse_like() { return 0; }
+  detect_bootloader() { printf 'grub2-bls\n'; }
+  systemd_boot_entries_dir() { printf '%s\n' "$debug_bls_dir"; }
+  kernel_cmdline_persistence_file() { printf '%s\n' "$debug_cmdline_fixture"; }
+  bls_find_boot_metadata_options() { return 1; }
+  JSON_OUTPUT=1
+  DEBUG_CMDLINE_TOKENS_ENTRY_FILTER="system-opensuse-debug-b.conf"
+  : "$JSON_OUTPUT" "$DEBUG_CMDLINE_TOKENS_ENTRY_FILTER"
+  debug_bls_cmdline_tokens
+) >"$tmp_dir/debug-cmdline-tokens-json.stdout" 2>"$tmp_dir/debug-cmdline-tokens-json.stderr" || debug_json_mode_rc=$?
+
+assert_eq \
+  "debug-cmdline-tokens JSON mode exits successfully" \
+  "0" \
+  "$debug_json_mode_rc"
+
+debug_json_output="$(cat "$tmp_dir/debug-cmdline-tokens-json.stdout")"
+assert_contains_text \
+  "debug-cmdline-tokens JSON output includes mode field" \
+  "\"mode\": \"debug-cmdline-tokens\"" \
+  "$debug_json_output"
+assert_contains_text \
+  "debug-cmdline-tokens JSON output includes entry filter field" \
+  "\"entry_filter\": \"system-opensuse-debug-b.conf\"" \
+  "$debug_json_output"
+assert_contains_text \
+  "debug-cmdline-tokens JSON output includes filtered entry debug line" \
+  "DEBUG[BLS entry system-opensuse-debug-b.conf]: root source=baseline_cmdline token=root=UUID=DBGBASE" \
+  "$debug_json_output"
+assert_not_contains_text \
+  "debug-cmdline-tokens JSON output excludes non-matching entry debug lines under --entry filter" \
+  "DEBUG[BLS entry system-opensuse-debug-a.conf]:" \
+  "$debug_json_output"
+# Test 15: parse_args rejects empty --entry values in debug token mode.
+entry_empty_equals_rc=0
+entry_empty_equals_err="$(
+  (
+    parse_args --debug-cmdline-tokens --entry=
+  ) 2>&1 >/dev/null
+)" || entry_empty_equals_rc=$?
+assert_eq \
+  "parse_args rejects empty --entry= value for debug token mode" \
+  "1" \
+  "$entry_empty_equals_rc"
+assert_contains_text \
+  "parse_args empty --entry= emits non-empty pattern error" \
+  "expected non-empty basename glob pattern, example: system-*.conf" \
+  "$entry_empty_equals_err"
+
+entry_empty_split_rc=0
+entry_empty_split_err="$(
+  (
+    parse_args --debug-cmdline-tokens --entry ""
+  ) 2>&1 >/dev/null
+)" || entry_empty_split_rc=$?
+assert_eq \
+  "parse_args rejects empty --entry value when provided as next argument" \
+  "1" \
+  "$entry_empty_split_rc"
+assert_contains_text \
+  "parse_args empty split --entry emits non-empty pattern error" \
+  "expected non-empty basename glob pattern, example: system-*.conf" \
+  "$entry_empty_split_err"
+# Test 16: parse_args rejects whitespace-only --entry values in debug token mode.
+entry_whitespace_split_rc=0
+entry_whitespace_split_err="$(
+  (
+    parse_args --debug-cmdline-tokens --entry "   "
+  ) 2>&1 >/dev/null
+)" || entry_whitespace_split_rc=$?
+assert_eq \
+  "parse_args rejects whitespace-only --entry value when provided as next argument" \
+  "1" \
+  "$entry_whitespace_split_rc"
+assert_contains_text \
+  "parse_args whitespace-only --entry emits non-empty pattern error" \
+  "expected non-empty basename glob pattern, example: system-*.conf" \
+  "$entry_whitespace_split_err"
+
+# Test 17: call-site wiring coverage for all boot-option flows.
+# Test 16: call-site wiring coverage for all boot-option flows.
+# Test 15: call-site wiring coverage for all boot-option flows.
+# Test 11: call-site wiring coverage for all boot-option flows.
 # Test 11: call-site wiring coverage for all boot-option flows.
 assert_contains_file \
   "preview helper function exists" \
   "preview_cmdline_change_interactive()" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
+  "--entry empty-value validation error message is present" \
+  "expected non-empty basename glob pattern, example: system-*.conf" \
   "$VFIO_SCRIPT"
 assert_contains_file \
   "kernel cmdline persistence helper exists" \
@@ -642,6 +878,46 @@ assert_contains_file \
 assert_contains_file \
   "BLS synchronization helper exists" \
   "sync_bls_entries_from_kernel_cmdline()" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
+  "debug-cmdline-tokens mode function exists" \
+  "debug_bls_cmdline_tokens()" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
+  "debug entry filter normalization helper exists" \
+  "normalize_debug_cmdline_entry_filter_arg()" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
+  "debug-cmdline-tokens argument parsing sets dedicated mode" \
+  "--debug-cmdline-tokens)" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
+  "--entry argument parsing branch exists" \
+  "--entry)" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
+  "--entry argument parsing stores entry filter value" \
+  "DEBUG_CMDLINE_TOKENS_ENTRY_FILTER=\"\$(normalize_debug_cmdline_entry_filter_arg \"\$1\")\"" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
+  "--entry is validated as debug-mode-only option" \
+  "die \"--entry is supported only with --debug-cmdline-tokens\"" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
+  "--json validation allows debug-cmdline-tokens mode" \
+  "die \"--json is currently supported only with --detect or --debug-cmdline-tokens\"" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
+  "debug token JSON formatter helper exists" \
+  "debug_cmdline_tokens_print_json_lines()" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
+  "debug-cmdline-tokens mode dispatch exists in main flow" \
+  "if [[ \"\$MODE\" == \"debug-cmdline-tokens\" ]]; then" \
+  "$VFIO_SCRIPT"
+assert_contains_file \
+  "debug-cmdline-tokens mode dispatch executes debug token tracer" \
+  "    debug_bls_cmdline_tokens" \
   "$VFIO_SCRIPT"
 assert_contains_file \
   "BLS synchronization helper reads kernel-cmdline path via helper" \

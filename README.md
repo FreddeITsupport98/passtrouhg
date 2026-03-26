@@ -22,6 +22,8 @@ The script is designed to be **interactive, defensive and reversible**, so that 
 > **Important:** This script does *not* create or modify VMs. It only prepares your host so that a hypervisor (libvirt/qemu, etc.) can passthrough the selected PCI devices.
 
 ## Unreleased
+- Hardened kernel-cmdline/BLS token parsing helpers to use deterministic whitespace splitting even when the shell runs with a non-default `IFS`, preventing false `root=` metadata misses during openSUSE persistence and BLS synchronization flows.
+- Added functional regression coverage that forces a non-space global `IFS` and verifies `sync_bls_entries_from_kernel_cmdline()` still preserves entry `root=` metadata and applies baseline VFIO/IOMMU parameters.
 - Added openSUSE root-metadata safety fallback from running `/proc/cmdline` for `/etc/kernel/cmdline` persistence candidates when `root=` cannot be recovered from existing cmdline/BLS/current-mount metadata.
 - Added the same `/proc/cmdline` fallback to Boot Loader Spec sync baseline building to prevent false `root=`-missing skips in non-snapshot boots.
 - Added functional regression coverage for the `/proc/cmdline` root-metadata recovery path so BLS sync is validated end-to-end when other metadata sources are intentionally unavailable.
@@ -30,6 +32,11 @@ The script is designed to be **interactive, defensive and reversible**, so that 
 - Added regression guard coverage to keep the openSUSE GRUB+BLS fallback detection path in `detect_bootloader()` from regressing.
 - Hardened openSUSE `/etc/kernel/cmdline` persistence updates to preserve existing boot metadata (`root=`, `rootflags=`, `rootfstype=`, `resume=`, `systemd.machine_id`) while adding VFIO/IOMMU parameters.
 - Added additional current-mount metadata fallback in BLS sync/persistence paths so cmdline updates avoid dropping root metadata and avoid false safety-abort skips.
+- Added a new read-only token trace mode, `--debug-cmdline-tokens`, that prints baseline and per-entry `root`/`rootflags` source selection used by Boot Loader Spec synchronization logic.
+- Extended `--debug-cmdline-tokens` with an optional `--entry` basename glob filter so trace runs can target specific Boot Loader Spec entries.
+- Added parse-time validation for `--entry` so empty/whitespace-only patterns (`--entry=`, `--entry ''`, or `--entry '   '`) are rejected with a clear non-empty pattern error.
+- Added machine-readable debug token trace output for `--debug-cmdline-tokens --json`, including mode, active entry filter, exit code, and emitted trace lines.
+- Added regression coverage that validates `--debug-cmdline-tokens` mode wiring, representative debug trace lines, and dry-run non-mutating behavior.
 - Fixed a boot-time graphics protocol daemon crash path caused by an undefined variable reference in generated daemon policy code (`host_gpu_bdf`/`guest_gpu_bdf` no-op line removed).
 - Deferred graphics protocol activation so installer runs no longer switch Wayland/X11 behavior live during wizard execution.
 - Updated graphics protocol daemon install flow to enable on boot without immediate start, so protocol adaptation takes effect after reboot.
@@ -164,7 +171,7 @@ Use `sudo` so that the script can write to `/etc`, `/usr/local`, systemd directo
 The script supports several modes controlled by flags. By default, without any flag, it runs the **interactive installer**.
 
 ```text
-./vfio.sh [--debug] [--dry-run] [--boot-vga-policy auto|strict] [--verify] [--detect] [--print-effective-config] [--json] [--self-test] [--health-check] [--health-check-previous] [--health-check-all] [--usb-health-check] [--reset] [--disable-bootlog] [--boot-remove] [--install-usb-bt-mitigation] [--print-fish-completion] [--print-bash-completion] [--print-zsh-completion]
+./vfio.sh [--debug] [--dry-run] [--boot-vga-policy auto|strict] [--verify] [--detect] [--sync-bls-only] [--debug-cmdline-tokens] [--entry pattern] [--verify-bls-sync] [--verify-bls-nosnapper] [--create-fallback-entry] [--print-effective-config] [--json] [--self-test] [--health-check] [--health-check-previous] [--health-check-all] [--usb-health-check] [--reset] [--disable-bootlog] [--boot-remove] [--install-usb-bt-mitigation] [--print-fish-completion] [--print-bash-completion] [--print-zsh-completion]
 ```
 
 ### Common flags
@@ -185,7 +192,8 @@ The script supports several modes controlled by flags. By default, without any f
 
 - `--json`
   - Valid with `--detect` to output machine-readable JSON only.
-  - In JSON mode, detect remediation prompts are skipped to keep output non-interactive and parser-safe.
+  - Also valid with `--debug-cmdline-tokens` to emit machine-readable trace output (`mode`, `entry_filter`, `exit_code`, `lines`).
+  - In detect JSON mode, remediation prompts are skipped to keep output non-interactive and parser-safe.
 
 ### Operational modes
 
@@ -253,6 +261,13 @@ The script supports several modes controlled by flags. By default, without any f
     - `display_manager_health`: `WORKS` / `NOT_WORK` / `NOT_PRESENT`
     - `graphics_stack_xorg`: `WORKS` / `NOT_WORK` / `NOT_PRESENT`
     - `graphics_stack_wayland`: `WORKS` / `NOT_WORK` / `NOT_PRESENT`
+
+- `--debug-cmdline-tokens`
+  - Runs `sync_bls_entries_from_kernel_cmdline()` in read-only dry-run tracing mode.
+  - Prints baseline candidate and selected source tokens for `root=` / `rootflags=`.
+  - Prints per-entry selected `root` / `rootflags` token sources so openSUSE BLS metadata mismatches can be diagnosed without writing any boot-entry files.
+  - Optional `--entry 'pattern'` filters tracing to matching Boot Loader Spec entry basenames (glob syntax); pattern must be non-empty and not whitespace-only.
+  - Optional `--json` emits machine-readable output with mode metadata, applied entry filter, command exit code, and emitted trace lines.
 
 - `--print-effective-config`
   - Prints a read-only effective Boot-VGA decision report based on persisted config plus current runtime topology.

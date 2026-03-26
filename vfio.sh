@@ -45,7 +45,9 @@ GRAPHICS_DAEMON_WANTS_LINK="/etc/systemd/system/multi-user.target.wants/vfio-gra
 DEBUG=0
 DRY_RUN=0
 JSON_OUTPUT=0
-MODE="install"   # install | verify | detect | sync-bls-only | verify-bls-sync | verify-bls-nosnapper | create-fallback-entry | self-test | health-check | reset | completion printers
+DEBUG_CMDLINE_TOKENS=0
+DEBUG_CMDLINE_TOKENS_ENTRY_FILTER=""
+MODE="install"   # install | verify | detect | sync-bls-only | debug-cmdline-tokens | verify-bls-sync | verify-bls-nosnapper | create-fallback-entry | self-test | health-check | reset | completion printers
 BOOT_VGA_POLICY_OVERRIDE=""   # AUTO | STRICT (empty = use script default)
 GRAPHICS_PROTOCOL_OVERRIDE="" # AUTO | X11 | WAYLAND (empty = auto-detect)
 INSTALL_GRAPHICS_DAEMON=1     # 1=install graphics protocol daemon, 0=skip
@@ -579,11 +581,13 @@ complete -c $cmd -l no-graphics-daemon -d 'Do not install graphics protocol daem
 complete -c $cmd -l verify -d 'Validate existing setup'
 complete -c $cmd -l detect -d 'Print detailed existing-setup report'
 complete -c $cmd -l sync-bls-only -d 'Sync BLS entry options from /etc/kernel/cmdline and verify drift'
+complete -c $cmd -l debug-cmdline-tokens -d 'Trace BLS root/rootflags token source selection (read-only)'
+complete -c $cmd -l entry -r -d 'Filter BLS entry basenames (glob) for --debug-cmdline-tokens'
 complete -c $cmd -l verify-bls-sync -d 'Verify BLS entry options are synchronized with /etc/kernel/cmdline'
 complete -c $cmd -l verify-bls-nosnapper -d 'Regression check: assert snapper BLS entries are never write targets'
 complete -c $cmd -l create-fallback-entry -d 'Create/update a non-VFIO fallback BLS entry from the current system entry'
 complete -c $cmd -l print-effective-config -d 'Print effective Boot-VGA policy decision path'
-complete -c $cmd -l json -d 'Machine-readable output with --detect'
+complete -c $cmd -l json -d 'Machine-readable output with --detect or --debug-cmdline-tokens'
 complete -c $cmd -l self-test -d 'Run self-tests and exit'
 complete -c $cmd -l health-check -d 'Audit current kernel/logs for VFIO friendliness'
 complete -c $cmd -l health-check-previous -d 'Audit previous boot for VFIO friendliness'
@@ -608,7 +612,7 @@ _vfio_sh_complete() {
   COMPREPLY=()
   cur="\${COMP_WORDS[COMP_CWORD]}"
   prev="\${COMP_WORDS[COMP_CWORD-1]}"
-  opts="--help -h --debug --dry-run --no-tui --boot-vga-policy --graphics-protocol --graphics-daemon-interval --no-graphics-daemon --verify --detect --sync-bls-only --verify-bls-sync --verify-bls-nosnapper --create-fallback-entry --print-effective-config --json --self-test --health-check --health-check-previous --health-check-all --usb-health-check --reset --disable-bootlog --boot-remove --install-usb-bt-mitigation --print-fish-completion --print-bash-completion --print-zsh-completion"
+  opts="--help -h --debug --dry-run --no-tui --boot-vga-policy --graphics-protocol --graphics-daemon-interval --no-graphics-daemon --verify --detect --sync-bls-only --debug-cmdline-tokens --entry --verify-bls-sync --verify-bls-nosnapper --create-fallback-entry --print-effective-config --json --self-test --health-check --health-check-previous --health-check-all --usb-health-check --reset --disable-bootlog --boot-remove --install-usb-bt-mitigation --print-fish-completion --print-bash-completion --print-zsh-completion"
 
   if [[ "\$prev" == "--boot-vga-policy" ]]; then
     COMPREPLY=(\$(compgen -W "auto strict" -- "\$cur"))
@@ -620,6 +624,10 @@ _vfio_sh_complete() {
   fi
   if [[ "\$prev" == "--graphics-daemon-interval" ]]; then
     COMPREPLY=(\$(compgen -W "5 10 15 30 60" -- "\$cur"))
+    return 0
+  fi
+  if [[ "\$prev" == "--entry" ]]; then
+    COMPREPLY=(\$(compgen -W "system-*.conf snapper-*.conf *.conf" -- "\$cur"))
     return 0
   fi
 
@@ -648,11 +656,13 @@ _vfio_sh_complete() {
     '--verify[Validate existing setup]' \\
     '--detect[Print detailed existing-setup report]' \\
     '--sync-bls-only[Sync BLS entry options from /etc/kernel/cmdline and verify drift]' \
+    '--debug-cmdline-tokens[Trace BLS root/rootflags token source selection (read-only)]' \
+    '--entry=[Filter BLS entry basenames (glob) for --debug-cmdline-tokens]:pattern:(system-*.conf snapper-*.conf *.conf)' \
     '--verify-bls-sync[Verify BLS entry options are synchronized with /etc/kernel/cmdline]' \
     '--verify-bls-nosnapper[Regression check: assert snapper BLS entries are never write targets]' \
     '--create-fallback-entry[Create/update a non-VFIO fallback BLS entry from the current system entry]' \
     '--print-effective-config[Print effective Boot-VGA policy decision path]' \\
-    '--json[Machine-readable output with --detect]' \\
+    '--json[Machine-readable output with --detect or --debug-cmdline-tokens]' \\
     '--self-test[Run self-tests and exit]' \\
     '--health-check[Audit current kernel/logs for VFIO friendliness]' \\
     '--health-check-previous[Audit previous boot for VFIO friendliness]' \\
@@ -1259,7 +1269,7 @@ prompt_yn() {
 
 usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--boot-vga-policy auto|strict] [--graphics-protocol auto|x11|wayland] [--graphics-daemon-interval seconds] [--no-graphics-daemon] [--verify] [--detect] [--sync-bls-only] [--verify-bls-sync] [--verify-bls-nosnapper] [--create-fallback-entry] [--print-effective-config] [--json] [--self-test] [--health-check] [--health-check-previous] [--health-check-all] [--usb-health-check] [--reset] [--disable-bootlog] [--boot-remove] [--install-usb-bt-mitigation] [--print-fish-completion] [--print-bash-completion] [--print-zsh-completion]
+Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--boot-vga-policy auto|strict] [--graphics-protocol auto|x11|wayland] [--graphics-daemon-interval seconds] [--no-graphics-daemon] [--verify] [--detect] [--sync-bls-only] [--debug-cmdline-tokens] [--entry pattern] [--verify-bls-sync] [--verify-bls-nosnapper] [--create-fallback-entry] [--print-effective-config] [--json] [--self-test] [--health-check] [--health-check-previous] [--health-check-all] [--usb-health-check] [--reset] [--disable-bootlog] [--boot-remove] [--install-usb-bt-mitigation] [--print-fish-completion] [--print-bash-completion] [--print-zsh-completion]
 
   --debug           Enable verbose debug logging (and bash xtrace).
   --dry-run         Show actions but do not write files / run system-changing commands.
@@ -1279,6 +1289,10 @@ Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--boot-vga-policy auto|str
   --detect          Print a detailed report of existing VFIO/passthrough configuration and exit.
   --sync-bls-only   Non-interactive mode: sync BLS entry options from /etc/kernel/cmdline, then run strict drift verification.
                    Intended for openSUSE BLS/systemd-boot workflows and snapshot recovery.
+  --debug-cmdline-tokens
+                   Non-interactive read-only mode: trace baseline and per-entry root/rootflags source selection
+                   used by sync_bls_entries_from_kernel_cmdline().
+  --entry          Optional non-empty basename glob filter for --debug-cmdline-tokens (for example: system-*.conf).
   --verify-bls-sync Non-interactive regression check: verify BLS entry options against /etc/kernel/cmdline.
                    Prints final PASS/FAIL summary and exits non-zero on drift.
   --verify-bls-nosnapper
@@ -1291,6 +1305,7 @@ Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--boot-vga-policy auto|str
                    Read-only report of effective Boot-VGA policy and runtime decision path
                    using $CONF_FILE plus current sysfs topology.
   --json            With --detect, print machine-readable JSON only (tri-state values: WORKS / NOT_WORK / NOT_PRESENT).
+                   With --debug-cmdline-tokens, emit machine-readable JSON debug lines.
   --self-test       Run automated checks for common issues (awk compatibility, PipeWire access) and exit.
   --health-check    Audit the running kernel and logs for VFIO-friendliness (no changes made) and exit.
   --health-check-previous
@@ -1349,6 +1364,12 @@ normalize_graphics_daemon_interval_arg() {
   fi
   printf '%s\n' "$((10#$raw))"
 }
+normalize_debug_cmdline_entry_filter_arg() {
+  local raw="${1:-}" trimmed
+  trimmed="$(trim "$raw")"
+  [[ -n "$trimmed" ]] || return 1
+  printf '%s\n' "$raw"
+}
 parse_args() {
   while (( $# )); do
     case "$1" in
@@ -1397,6 +1418,17 @@ parse_args() {
         ;;
       --sync-bls-only)
         MODE="sync-bls-only"
+        ;;
+      --debug-cmdline-tokens)
+        MODE="debug-cmdline-tokens"
+        ;;
+      --entry)
+        shift
+        (( $# > 0 )) || die "--entry requires a basename glob pattern (example: system-*.conf)"
+        DEBUG_CMDLINE_TOKENS_ENTRY_FILTER="$(normalize_debug_cmdline_entry_filter_arg "$1")" || die "Invalid --entry value: $1 (expected non-empty basename glob pattern, example: system-*.conf)"
+        ;;
+      --entry=*)
+        DEBUG_CMDLINE_TOKENS_ENTRY_FILTER="$(normalize_debug_cmdline_entry_filter_arg "${1#*=}")" || die "Invalid --entry value: ${1#*=} (expected non-empty basename glob pattern, example: system-*.conf)"
         ;;
       --verify-bls-sync)
         MODE="verify-bls-sync"
@@ -1461,13 +1493,52 @@ parse_args() {
   done
 
   # verify/detect/self-test/print-effective-config/completion modes imply dry-run
-  if [[ "$MODE" == "verify" || "$MODE" == "detect" || "$MODE" == "verify-bls-sync" || "$MODE" == "verify-bls-nosnapper" || "$MODE" == "self-test" || "$MODE" == "print-effective-config" || "$MODE" == "print-fish-completion" || "$MODE" == "print-bash-completion" || "$MODE" == "print-zsh-completion" ]]; then
+  if [[ "$MODE" == "verify" || "$MODE" == "detect" || "$MODE" == "debug-cmdline-tokens" || "$MODE" == "verify-bls-sync" || "$MODE" == "verify-bls-nosnapper" || "$MODE" == "self-test" || "$MODE" == "print-effective-config" || "$MODE" == "print-fish-completion" || "$MODE" == "print-bash-completion" || "$MODE" == "print-zsh-completion" ]]; then
     DRY_RUN=1
   fi
 
-  if (( JSON_OUTPUT )) && [[ "$MODE" != "detect" ]]; then
-    die "--json is currently supported only with --detect"
+  if (( JSON_OUTPUT )) && [[ "$MODE" != "detect" && "$MODE" != "debug-cmdline-tokens" ]]; then
+    die "--json is currently supported only with --detect or --debug-cmdline-tokens"
   fi
+  if [[ -n "${DEBUG_CMDLINE_TOKENS_ENTRY_FILTER:-}" ]] && [[ "$MODE" != "debug-cmdline-tokens" ]]; then
+    die "--entry is supported only with --debug-cmdline-tokens"
+  fi
+}
+
+json_escape() {
+  local s="${1:-}"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+
+debug_cmdline_tokens_print_json_lines() {
+  local raw_output="${1:-}" exit_code="${2:-0}"
+  local filter="${DEBUG_CMDLINE_TOKENS_ENTRY_FILTER:-}"
+  local -a lines=()
+  local idx line
+  if [[ -n "$raw_output" ]]; then
+    mapfile -t lines <<<"$raw_output"
+  fi
+
+  printf '{\n'
+  printf '  "mode": "debug-cmdline-tokens",\n'
+  printf '  "entry_filter": "%s",\n' "$(json_escape "$filter")"
+  printf '  "exit_code": %s,\n' "$exit_code"
+  printf '  "lines": [\n'
+  for idx in "${!lines[@]}"; do
+    line="${lines[$idx]}"
+    printf '    "%s"' "$(json_escape "$line")"
+    if (( idx + 1 < ${#lines[@]} )); then
+      printf ','
+    fi
+    printf '\n'
+  done
+  printf '  ]\n'
+  printf '}\n'
 }
 
 # Disable and remove the optional VFIO boot log dumper without touching the
@@ -4116,6 +4187,7 @@ remove_param_all() {
   local cmdline="$1" param="$2"
   # Split on spaces to be safe.
   local out="" tok
+  local IFS=$' \t\n'
   for tok in $cmdline; do
     if [[ "$tok" == "$param" ]]; then
       continue
@@ -4128,6 +4200,7 @@ remove_param_prefix() {
   # Remove cmdline tokens that start with a given prefix (e.g. key=).
   local cmdline="$1" prefix="$2"
   local out="" tok
+  local IFS=$' \t\n'
   for tok in $cmdline; do
     if [[ "$tok" == "${prefix}"* ]]; then
       continue
@@ -4532,6 +4605,7 @@ kernel_cmdline_reconcile_boot_metadata_with_current_mount() {
 #   -> root=UUID=abcd
 cmdline_get_key_value_token() {
   local cmdline="$1" key="$2" tok
+  local IFS=$' \t\n'
   for tok in $cmdline; do
     case "$tok" in
       "${key}"=*)
@@ -4544,6 +4618,7 @@ cmdline_get_key_value_token() {
 }
 cmdline_contains_exact_token() {
   local cmdline="$1" token="$2" tok
+  local IFS=$' \t\n'
   [[ -n "$token" ]] || return 1
   for tok in $cmdline; do
     if [[ "$tok" == "$token" ]]; then
@@ -4555,6 +4630,7 @@ cmdline_contains_exact_token() {
 cmdline_remove_key_value_tokens() {
   # Remove all key=value tokens for one key from a cmdline string.
   local cmdline="$1" key="$2" tok out=""
+  local IFS=$' \t\n'
   for tok in $cmdline; do
     case "$tok" in
       "${key}"=*) continue ;;
@@ -4788,6 +4864,7 @@ bls_strip_vfio_forcing_tokens_from_options() {
   # Remove known VFIO-forcing cmdline tokens from one BLS options string.
   local opts="$1"
   local out="" tok
+  local IFS=$' \t\n'
   for tok in $opts; do
     case "$tok" in
       vfio-pci.ids=*|pcie_acs_override=*)
@@ -4808,6 +4885,7 @@ bls_strip_vfio_forcing_tokens_from_options() {
 }
 bls_options_has_forbidden_vfio_tokens() {
   local opts="$1" tok
+  local IFS=$' \t\n'
   for tok in $opts; do
     case "$tok" in
       vfio-pci.ids=*|pcie_acs_override=*)
@@ -5331,28 +5409,65 @@ sync_bls_entries_from_kernel_cmdline() {
     return 0
   fi
   local fallback_metadata_opts
+  local base_file_root_tok base_file_rootflags_tok
+  local base_fallback_root_tok base_fallback_rootflags_tok
+  local mount_root_tok mount_rootflags_tok
+  local proc_root_tok proc_rootflags_tok
+  local base_root_source base_rootflags_source
+  local running_boot_opts running_root_tok
   fallback_metadata_opts="$(bls_find_boot_metadata_options 2>/dev/null || true)"
+  base_file_root_tok="$(cmdline_get_key_value_token "$base_cmdline" "root" 2>/dev/null || true)"
+  base_file_rootflags_tok="$(cmdline_get_key_value_token "$base_cmdline" "rootflags" 2>/dev/null || true)"
+  base_fallback_root_tok=""
+  base_fallback_rootflags_tok=""
+  mount_root_tok=""
+  mount_rootflags_tok=""
+  proc_root_tok=""
+  proc_rootflags_tok=""
+  base_root_source=""
+  base_rootflags_source=""
+  running_boot_opts=""
+  running_root_tok=""
+  if [[ -n "$base_file_root_tok" ]]; then
+    base_root_source="kernel_cmdline_file"
+  fi
+  if [[ -n "$base_file_rootflags_tok" ]]; then
+    base_rootflags_source="kernel_cmdline_file"
+  fi
+
   if [[ -n "$fallback_metadata_opts" ]]; then
     base_cmdline="$(cmdline_add_boot_metadata_tokens_from_options "$base_cmdline" "$fallback_metadata_opts")"
+    base_fallback_root_tok="$(cmdline_get_key_value_token "$fallback_metadata_opts" "root" 2>/dev/null || true)"
+    base_fallback_rootflags_tok="$(cmdline_get_key_value_token "$fallback_metadata_opts" "rootflags" 2>/dev/null || true)"
+    if [[ -n "$base_fallback_root_tok" ]]; then
+      base_root_source="bls_metadata_options"
+    fi
+    if [[ -n "$base_fallback_rootflags_tok" ]]; then
+      base_rootflags_source="bls_metadata_options"
+    fi
   fi
   if ! cmdline_get_key_value_token "$base_cmdline" "root" >/dev/null 2>&1; then
-    local mount_root_tok mount_rootflags_tok
     mount_root_tok="$(bls_current_mount_root_token 2>/dev/null || true)"
     mount_rootflags_tok="$(bls_current_mount_rootflags_token 2>/dev/null || true)"
     if [[ -n "$mount_root_tok" ]]; then
       base_cmdline="$(cmdline_set_key_value_token "$base_cmdline" "$mount_root_tok")"
+      base_root_source="current_mount_metadata"
     fi
     if [[ -n "$mount_rootflags_tok" ]]; then
       base_cmdline="$(cmdline_set_key_value_token "$base_cmdline" "$mount_rootflags_tok")"
+      base_rootflags_source="current_mount_metadata"
     fi
   fi
   if ! cmdline_get_key_value_token "$base_cmdline" "root" >/dev/null 2>&1; then
-    local running_boot_opts running_root_tok
     running_boot_opts="$(cat /proc/cmdline 2>/dev/null || true)"
     if [[ -n "$running_boot_opts" ]]; then
+      proc_root_tok="$(cmdline_get_key_value_token "$running_boot_opts" "root" 2>/dev/null || true)"
+      proc_rootflags_tok="$(cmdline_get_key_value_token "$running_boot_opts" "rootflags" 2>/dev/null || true)"
       base_cmdline="$(cmdline_add_boot_metadata_tokens_from_options "$base_cmdline" "$running_boot_opts")"
       running_root_tok="$(cmdline_get_key_value_token "$base_cmdline" "root" 2>/dev/null || true)"
       if [[ -n "$running_root_tok" ]]; then
+        base_root_source="proc_cmdline"
+        [[ -n "$proc_rootflags_tok" ]] && base_rootflags_source="proc_cmdline"
         note "Recovered root boot metadata for BLS sync baseline from running /proc/cmdline."
       fi
     fi
@@ -5367,6 +5482,20 @@ sync_bls_entries_from_kernel_cmdline() {
   base_rootfstype_tok="$(cmdline_get_key_value_token "$base_cmdline" "rootfstype" 2>/dev/null || true)"
   base_resume_tok="$(cmdline_get_key_value_token "$base_cmdline" "resume" 2>/dev/null || true)"
   base_machine_id_tok="$(cmdline_get_key_value_token "$base_cmdline" "systemd.machine_id" 2>/dev/null || true)"
+  if [[ -z "$base_root_source" ]]; then
+    [[ -n "$base_root_tok" ]] && base_root_source="unknown"
+  fi
+  if [[ -z "$base_rootflags_source" ]]; then
+    [[ -n "$base_rootflags_tok" ]] && base_rootflags_source="unknown"
+  fi
+  if (( DEBUG_CMDLINE_TOKENS )); then
+    say "DEBUG[BLS baseline-candidate]: kernel_cmdline root=${base_file_root_tok:-<none>} rootflags=${base_file_rootflags_tok:-<none>}"
+    say "DEBUG[BLS baseline-candidate]: bls_metadata root=${base_fallback_root_tok:-<none>} rootflags=${base_fallback_rootflags_tok:-<none>}"
+    say "DEBUG[BLS baseline-candidate]: current_mount root=${mount_root_tok:-<none>} rootflags=${mount_rootflags_tok:-<none>}"
+    say "DEBUG[BLS baseline-candidate]: proc_cmdline root=${proc_root_tok:-<none>} rootflags=${proc_rootflags_tok:-<none>}"
+    say "DEBUG[BLS baseline]: root source=${base_root_source:-none} token=${base_root_tok:-<none>}"
+    say "DEBUG[BLS baseline]: rootflags source=${base_rootflags_source:-none} token=${base_rootflags_tok:-<none>}"
+  fi
 
   local dir
   dir="$(systemd_boot_entries_dir 2>/dev/null || true)"
@@ -5389,17 +5518,27 @@ sync_bls_entries_from_kernel_cmdline() {
   fi
 
   local changed=0 examined=0 snapper_skipped=0 root_examined=0 fallback_skipped=0 root_missing_skipped=0
-  local current_opts merged_opts root_tok rootflags_tok rootfstype_tok resume_tok machine_id_tok
+  local debug_filter_skipped=0
+  local current_opts merged_opts root_tok rootflags_tok rootfstype_tok resume_tok machine_id_tok root_source rootflags_source
   local entry_snapshot_id entry_snapshot_rootflags_tok current_rootflags_snapshot_id
   local entry_backup_opts backup_root_tok backup_rootflags_tok backup_rootfstype_tok backup_resume_tok backup_machine_id_tok
+  local entry_name
   for f in "${entries[@]}"; do
+    entry_name="$(basename "$f")"
     if bls_entry_is_vfio_fallback "$f"; then
       (( fallback_skipped += 1 ))
       continue
     fi
-    if [[ "$(basename "$f")" == snapper-* ]]; then
+    if [[ "$entry_name" == snapper-* ]]; then
       (( snapper_skipped += 1 ))
       continue
+    fi
+    if (( DEBUG_CMDLINE_TOKENS )) && [[ -n "${DEBUG_CMDLINE_TOKENS_ENTRY_FILTER:-}" ]]; then
+      # shellcheck disable=SC2053
+      if [[ "$entry_name" != $DEBUG_CMDLINE_TOKENS_ENTRY_FILTER ]]; then
+        (( debug_filter_skipped += 1 ))
+        continue
+      fi
     fi
     current_opts="$(grep -m1 -E '^options[[:space:]]+' "$f" 2>/dev/null | sed -E 's/^options[[:space:]]+//')"
     current_opts="$(trim "${current_opts:-}")"
@@ -5413,6 +5552,10 @@ sync_bls_entries_from_kernel_cmdline() {
     rootfstype_tok="$(cmdline_get_key_value_token "$current_opts" "rootfstype" 2>/dev/null || true)"
     resume_tok="$(cmdline_get_key_value_token "$current_opts" "resume" 2>/dev/null || true)"
     machine_id_tok="$(cmdline_get_key_value_token "$current_opts" "systemd.machine_id" 2>/dev/null || true)"
+    root_source=""
+    rootflags_source=""
+    [[ -n "$root_tok" ]] && root_source="entry_options"
+    [[ -n "$rootflags_tok" ]] && rootflags_source="entry_options"
     entry_backup_opts="$(bls_find_entry_backup_metadata_options "$f" 2>/dev/null || true)"
     backup_root_tok=""
     backup_rootflags_tok=""
@@ -5429,15 +5572,19 @@ sync_bls_entries_from_kernel_cmdline() {
       if [[ -n "$backup_root_tok" ]]; then
         if [[ -z "$root_tok" ]]; then
           root_tok="$backup_root_tok"
+          root_source="entry_backup"
         elif [[ -n "$base_root_tok" && "$root_tok" == "$base_root_tok" && "$backup_root_tok" != "$base_root_tok" ]]; then
           root_tok="$backup_root_tok"
+          root_source="entry_backup_preferred_over_baseline"
         fi
       fi
       if [[ -n "$backup_rootflags_tok" ]]; then
         if [[ -z "$rootflags_tok" ]]; then
           rootflags_tok="$backup_rootflags_tok"
+          rootflags_source="entry_backup"
         elif [[ -n "$base_rootflags_tok" && "$rootflags_tok" == "$base_rootflags_tok" && "$backup_rootflags_tok" != "$base_rootflags_tok" ]]; then
           rootflags_tok="$backup_rootflags_tok"
+          rootflags_source="entry_backup_preferred_over_baseline"
         fi
       fi
       if [[ -n "$backup_rootfstype_tok" ]]; then
@@ -5464,9 +5611,11 @@ sync_bls_entries_from_kernel_cmdline() {
     fi
     if [[ -z "$root_tok" && -n "$fallback_metadata_opts" ]]; then
       root_tok="$(cmdline_get_key_value_token "$fallback_metadata_opts" "root" 2>/dev/null || true)"
+      [[ -n "$root_tok" ]] && root_source="bls_metadata_options"
     fi
     if [[ -z "$rootflags_tok" && -n "$fallback_metadata_opts" ]]; then
       rootflags_tok="$(cmdline_get_key_value_token "$fallback_metadata_opts" "rootflags" 2>/dev/null || true)"
+      [[ -n "$rootflags_tok" ]] && rootflags_source="bls_metadata_options"
     fi
     if [[ -z "$rootfstype_tok" && -n "$fallback_metadata_opts" ]]; then
       rootfstype_tok="$(cmdline_get_key_value_token "$fallback_metadata_opts" "rootfstype" 2>/dev/null || true)"
@@ -5483,16 +5632,32 @@ sync_bls_entries_from_kernel_cmdline() {
       current_rootflags_snapshot_id="$(rootflags_snapshot_id_from_token "${rootflags_tok:-}" 2>/dev/null || true)"
       if [[ -n "$entry_snapshot_rootflags_tok" ]] && [[ "$current_rootflags_snapshot_id" != "$entry_snapshot_id" ]]; then
         rootflags_tok="$entry_snapshot_rootflags_tok"
+        rootflags_source="entry_snapshot_filename"
       fi
     fi
     if [[ -z "$root_tok" ]]; then
       if [[ -n "$base_root_tok" ]]; then
         root_tok="$base_root_tok"
+        root_source="baseline_cmdline"
       else
         (( root_missing_skipped += 1 ))
-        note "Skipping BLS sync for $(basename "$f"): unable to determine root=... metadata for this entry."
+        if (( DEBUG_CMDLINE_TOKENS )); then
+          say "DEBUG[BLS entry ${entry_name}]: root source=none token=<none> (skipped)"
+          say "DEBUG[BLS entry ${entry_name}]: rootflags source=${rootflags_source:-none} token=${rootflags_tok:-<none>}"
+        fi
+        note "Skipping BLS sync for ${entry_name}: unable to determine root=... metadata for this entry."
         continue
       fi
+    fi
+    if (( DEBUG_CMDLINE_TOKENS )); then
+      local debug_rootflags_tok
+      debug_rootflags_tok="${rootflags_tok:-}"
+      if [[ -z "$debug_rootflags_tok" && -n "$base_rootflags_tok" ]]; then
+        debug_rootflags_tok="$base_rootflags_tok"
+        [[ -z "$rootflags_source" ]] && rootflags_source="baseline_cmdline"
+      fi
+      say "DEBUG[BLS entry ${entry_name}]: root source=${root_source:-none} token=${root_tok:-<none>}"
+      say "DEBUG[BLS entry ${entry_name}]: rootflags source=${rootflags_source:-none} token=${debug_rootflags_tok:-<none>}"
     fi
 
     [[ -n "$root_tok" ]] && merged_opts="$(cmdline_set_key_value_token "$merged_opts" "$root_tok")"
@@ -5526,8 +5691,8 @@ sync_bls_entries_from_kernel_cmdline() {
   done
 
   if (( changed == 0 )); then
-    if (( root_missing_skipped > 0 )); then
-      note "No Boot Loader Spec entries were synchronized from /etc/kernel/cmdline (${examined} root/system entries checked, ${root_missing_skipped} skipped due missing root metadata, ${snapper_skipped} snapper skipped, ${fallback_skipped} fallback skipped)."
+    if (( root_missing_skipped > 0 )) || (( debug_filter_skipped > 0 )); then
+      note "No Boot Loader Spec entries were synchronized from /etc/kernel/cmdline (${examined} root/system entries checked, ${root_missing_skipped} skipped due missing root metadata, ${snapper_skipped} snapper skipped, ${fallback_skipped} fallback skipped, ${debug_filter_skipped} filtered by --entry)."
     else
       note "Boot Loader Spec options are already synchronized with /etc/kernel/cmdline (${examined} root/system entries checked, ${snapper_skipped} snapper skipped, ${fallback_skipped} fallback skipped)."
     fi
@@ -5539,11 +5704,41 @@ sync_bls_entries_from_kernel_cmdline() {
     entry_word="entry"
   fi
   if (( DRY_RUN )); then
-    say "DRY RUN: would synchronize ${changed} Boot Loader Spec ${entry_word} from $cmdline_file (${examined} root/system entries checked, ${root_missing_skipped} skipped due missing root metadata, ${snapper_skipped} snapper skipped, ${fallback_skipped} fallback skipped)."
+    say "DRY RUN: would synchronize ${changed} Boot Loader Spec ${entry_word} from $cmdline_file (${examined} root/system entries checked, ${root_missing_skipped} skipped due missing root metadata, ${snapper_skipped} snapper skipped, ${fallback_skipped} fallback skipped, ${debug_filter_skipped} filtered by --entry)."
   else
-    say "Synchronized ${changed} Boot Loader Spec ${entry_word} from $cmdline_file (preserved per-entry root/rootflags/systemd.machine_id metadata; ${examined} root/system entries checked, ${root_missing_skipped} skipped due missing root metadata, ${snapper_skipped} snapper skipped, ${fallback_skipped} fallback skipped)."
+    say "Synchronized ${changed} Boot Loader Spec ${entry_word} from $cmdline_file (preserved per-entry root/rootflags/systemd.machine_id metadata; ${examined} root/system entries checked, ${root_missing_skipped} skipped due missing root metadata, ${snapper_skipped} snapper skipped, ${fallback_skipped} fallback skipped, ${debug_filter_skipped} filtered by --entry)."
   fi
   return 0
+}
+debug_bls_cmdline_tokens() {
+  local prev_debug="${DEBUG_CMDLINE_TOKENS:-0}"
+  local prev_dry="${DRY_RUN:-0}"
+  local rc=0
+  local sync_output=""
+
+  DEBUG_CMDLINE_TOKENS=1
+  DRY_RUN=1
+
+  if (( JSON_OUTPUT )); then
+    if sync_output="$(sync_bls_entries_from_kernel_cmdline)"; then
+      rc=0
+    else
+      rc=$?
+    fi
+    debug_cmdline_tokens_print_json_lines "$sync_output" "$rc"
+  else
+    say
+    hdr "BLS cmdline token source debug"
+    note "Tracing root/rootflags source selection in read-only dry-run mode."
+    if [[ -n "${DEBUG_CMDLINE_TOKENS_ENTRY_FILTER:-}" ]]; then
+      note "Applying entry filter: ${DEBUG_CMDLINE_TOKENS_ENTRY_FILTER}"
+    fi
+    sync_bls_entries_from_kernel_cmdline || rc=$?
+  fi
+
+  DRY_RUN="$prev_dry"
+  DEBUG_CMDLINE_TOKENS="$prev_debug"
+  return "$rc"
 }
 verify_bls_entries_against_kernel_cmdline() {
   local fail_count=0
@@ -10560,7 +10755,7 @@ main() {
   # kernel modules / bindings. Self-test, detect and health-check
   # variants should be able to run in "thin" environments (containers,
   # chroots) where modprobe may be absent.
-  if [[ "$MODE" != "verify" && "$MODE" != "self-test" && "$MODE" != "detect" && "$MODE" != "print-effective-config" && "$MODE" != "sync-bls-only" && "$MODE" != "verify-bls-sync" && "$MODE" != "verify-bls-nosnapper" && "$MODE" != "create-fallback-entry" && "$MODE" != "health-check" && "$MODE" != "health-check-prev" && "$MODE" != "health-check-all" && "$MODE" != "usb-health-check" && "$MODE" != "install-usb-bt-mitigation" ]]; then
+  if [[ "$MODE" != "verify" && "$MODE" != "self-test" && "$MODE" != "detect" && "$MODE" != "print-effective-config" && "$MODE" != "sync-bls-only" && "$MODE" != "debug-cmdline-tokens" && "$MODE" != "verify-bls-sync" && "$MODE" != "verify-bls-nosnapper" && "$MODE" != "create-fallback-entry" && "$MODE" != "health-check" && "$MODE" != "health-check-prev" && "$MODE" != "health-check-all" && "$MODE" != "usb-health-check" && "$MODE" != "install-usb-bt-mitigation" ]]; then
     need_cmd modprobe
   fi
 
@@ -10590,6 +10785,10 @@ main() {
     require_writable_root_or_die
     sync_bls_entries_from_kernel_cmdline
     verify_bls_entries_against_kernel_cmdline
+    exit $?
+  fi
+  if [[ "$MODE" == "debug-cmdline-tokens" ]]; then
+    debug_bls_cmdline_tokens
     exit $?
   fi
   if [[ "$MODE" == "create-fallback-entry" ]]; then
