@@ -24,6 +24,8 @@ The script is designed to be **interactive, defensive and reversible**, so that 
 ## Unreleased
 - Added openSUSE root-metadata safety fallback from running `/proc/cmdline` for `/etc/kernel/cmdline` persistence candidates when `root=` cannot be recovered from existing cmdline/BLS/current-mount metadata.
 - Added the same `/proc/cmdline` fallback to Boot Loader Spec sync baseline building to prevent false `root=`-missing skips in non-snapshot boots.
+- Added functional regression coverage for the `/proc/cmdline` root-metadata recovery path so BLS sync is validated end-to-end when other metadata sources are intentionally unavailable.
+- Updated Boot Loader Spec sync safety behavior to continue with per-entry root preservation when global root metadata cannot be recovered, skipping only entries that still lack provable `root=` metadata.
 - Hardened openSUSE GRUB snapshot/BLS bootloader detection so systems with active Boot Loader Spec entries are classified as `grub2-bls` even when explicit BLS markers are missing, preventing VFIO cmdline updates from being silently limited to legacy `/etc/default/grub` edits.
 - Added regression guard coverage to keep the openSUSE GRUB+BLS fallback detection path in `detect_bootloader()` from regressing.
 - Hardened openSUSE `/etc/kernel/cmdline` persistence updates to preserve existing boot metadata (`root=`, `rootflags=`, `rootfstype=`, `resume=`, `systemd.machine_id`) while adding VFIO/IOMMU parameters.

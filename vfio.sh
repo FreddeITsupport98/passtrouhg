@@ -5358,8 +5358,8 @@ sync_bls_entries_from_kernel_cmdline() {
     fi
   fi
   if ! cmdline_get_key_value_token "$base_cmdline" "root" >/dev/null 2>&1; then
-    note "Skipping BLS entry sync: unable to determine root=... metadata from $cmdline_file, BLS backups, current mount metadata, or /proc/cmdline."
-    return 1
+    note "BLS sync baseline has no global root=... metadata after trying $cmdline_file, BLS backups, current mount metadata, and /proc/cmdline."
+    note "Continuing with per-entry root preservation; entries without provable root metadata will be skipped for safety."
   fi
   local base_root_tok base_rootflags_tok base_rootfstype_tok base_resume_tok base_machine_id_tok
   base_root_tok="$(cmdline_get_key_value_token "$base_cmdline" "root" 2>/dev/null || true)"
@@ -5388,7 +5388,7 @@ sync_bls_entries_from_kernel_cmdline() {
     return 0
   fi
 
-  local changed=0 examined=0 snapper_skipped=0 root_examined=0 fallback_skipped=0
+  local changed=0 examined=0 snapper_skipped=0 root_examined=0 fallback_skipped=0 root_missing_skipped=0
   local current_opts merged_opts root_tok rootflags_tok rootfstype_tok resume_tok machine_id_tok
   local entry_snapshot_id entry_snapshot_rootflags_tok current_rootflags_snapshot_id
   local entry_backup_opts backup_root_tok backup_rootflags_tok backup_rootfstype_tok backup_resume_tok backup_machine_id_tok
@@ -5485,6 +5485,15 @@ sync_bls_entries_from_kernel_cmdline() {
         rootflags_tok="$entry_snapshot_rootflags_tok"
       fi
     fi
+    if [[ -z "$root_tok" ]]; then
+      if [[ -n "$base_root_tok" ]]; then
+        root_tok="$base_root_tok"
+      else
+        (( root_missing_skipped += 1 ))
+        note "Skipping BLS sync for $(basename "$f"): unable to determine root=... metadata for this entry."
+        continue
+      fi
+    fi
 
     [[ -n "$root_tok" ]] && merged_opts="$(cmdline_set_key_value_token "$merged_opts" "$root_tok")"
     [[ -n "$rootflags_tok" ]] && merged_opts="$(cmdline_set_key_value_token "$merged_opts" "$rootflags_tok")"
@@ -5517,7 +5526,11 @@ sync_bls_entries_from_kernel_cmdline() {
   done
 
   if (( changed == 0 )); then
-    note "Boot Loader Spec options are already synchronized with /etc/kernel/cmdline (${examined} root/system entries checked, ${snapper_skipped} snapper skipped, ${fallback_skipped} fallback skipped)."
+    if (( root_missing_skipped > 0 )); then
+      note "No Boot Loader Spec entries were synchronized from /etc/kernel/cmdline (${examined} root/system entries checked, ${root_missing_skipped} skipped due missing root metadata, ${snapper_skipped} snapper skipped, ${fallback_skipped} fallback skipped)."
+    else
+      note "Boot Loader Spec options are already synchronized with /etc/kernel/cmdline (${examined} root/system entries checked, ${snapper_skipped} snapper skipped, ${fallback_skipped} fallback skipped)."
+    fi
     return 0
   fi
 
@@ -5526,9 +5539,9 @@ sync_bls_entries_from_kernel_cmdline() {
     entry_word="entry"
   fi
   if (( DRY_RUN )); then
-    say "DRY RUN: would synchronize ${changed} Boot Loader Spec ${entry_word} from $cmdline_file (${examined} root/system entries checked, ${snapper_skipped} snapper skipped, ${fallback_skipped} fallback skipped)."
+    say "DRY RUN: would synchronize ${changed} Boot Loader Spec ${entry_word} from $cmdline_file (${examined} root/system entries checked, ${root_missing_skipped} skipped due missing root metadata, ${snapper_skipped} snapper skipped, ${fallback_skipped} fallback skipped)."
   else
-    say "Synchronized ${changed} Boot Loader Spec ${entry_word} from $cmdline_file (preserved per-entry root/rootflags/systemd.machine_id metadata; ${examined} root/system entries checked, ${snapper_skipped} snapper skipped, ${fallback_skipped} fallback skipped)."
+    say "Synchronized ${changed} Boot Loader Spec ${entry_word} from $cmdline_file (preserved per-entry root/rootflags/systemd.machine_id metadata; ${examined} root/system entries checked, ${root_missing_skipped} skipped due missing root metadata, ${snapper_skipped} snapper skipped, ${fallback_skipped} fallback skipped)."
   fi
   return 0
 }

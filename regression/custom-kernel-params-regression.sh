@@ -474,7 +474,159 @@ assert_cmdline_lacks_token \
   "splash=silent" \
   "$partial_opts"
 
-# Test 10: call-site wiring coverage for all boot-option flows.
+# Test 10: BLS sync falls back to /proc/cmdline root metadata when other sources are unavailable.
+proc_bls_dir="$tmp_dir/bls-proc-root-recovery-entries"
+mkdir -p "$proc_bls_dir"
+proc_cmdline_fixture="$tmp_dir/kernel-cmdline-proc-root-recovery"
+cat >"$proc_cmdline_fixture" <<'EOF'
+quiet iommu=pt rd.driver.pre=vfio-pci selinux=0 apparmor=0
+EOF
+
+proc_entry="$proc_bls_dir/system-opensuse-proc-root-recovery.conf"
+cat >"$proc_entry" <<'EOF'
+title openSUSE proc-root recovery entry
+linux /vmlinuz-proc-root-recovery
+initrd /initrd-proc-root-recovery
+options splash=silent proclegacy=1 rw
+EOF
+
+proc_cmdline_cat_shim_dir="$tmp_dir/proc-cmdline-cat-shim-bin"
+mkdir -p "$proc_cmdline_cat_shim_dir"
+cat_bin="$(command -v cat)"
+cat >"$proc_cmdline_cat_shim_dir/cat" <<EOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "/proc/cmdline" ]]; then
+  printf '%s\n' 'mitigations=auto quiet root=UUID=PROCR rootflags=subvol=@/.snapshots/99/snapshot ro'
+  exit 0
+fi
+exec "$cat_bin" "\$@"
+EOF
+chmod +x "$proc_cmdline_cat_shim_dir/cat"
+
+old_path="$PATH"
+PATH="$proc_cmdline_cat_shim_dir:$PATH"
+
+is_opensuse_like() { return 0; }
+detect_bootloader() { printf 'grub2-bls\n'; }
+systemd_boot_entries_dir() { printf '%s\n' "$proc_bls_dir"; }
+kernel_cmdline_persistence_file() { printf '%s\n' "$proc_cmdline_fixture"; }
+bls_find_boot_metadata_options() { return 1; }
+bls_current_mount_root_token() { return 1; }
+bls_current_mount_rootflags_token() { return 1; }
+
+proc_sync_rc=0
+sync_bls_entries_from_kernel_cmdline >"$tmp_dir/proc-root-sync.stdout" 2>"$tmp_dir/proc-root-sync.stderr" || proc_sync_rc=$?
+
+PATH="$old_path"
+
+assert_eq \
+  "proc-cmdline fallback sync exits successfully when other root metadata sources are unavailable" \
+  "0" \
+  "$proc_sync_rc"
+
+proc_opts="$(grep -m1 -E '^options[[:space:]]+' "$proc_entry" | sed -E 's/^options[[:space:]]+//')"
+assert_cmdline_has_token \
+  "proc-cmdline fallback applies recovered root token to BLS entry" \
+  "root=UUID=PROCR" \
+  "$proc_opts"
+assert_cmdline_has_token \
+  "proc-cmdline fallback applies recovered rootflags token to BLS entry" \
+  "rootflags=subvol=@/.snapshots/99/snapshot" \
+  "$proc_opts"
+assert_cmdline_has_token \
+  "proc-cmdline fallback applies baseline iommu token to BLS entry" \
+  "iommu=pt" \
+  "$proc_opts"
+assert_cmdline_has_token \
+  "proc-cmdline fallback applies baseline rd.driver.pre token to BLS entry" \
+  "rd.driver.pre=vfio-pci" \
+  "$proc_opts"
+assert_cmdline_lacks_token \
+  "proc-cmdline fallback removes stale proclegacy token from BLS entry" \
+  "proclegacy=1" \
+  "$proc_opts"
+assert_cmdline_lacks_token \
+  "proc-cmdline fallback removes stale splash token from BLS entry" \
+  "splash=silent" \
+  "$proc_opts"
+# Test 11: BLS sync continues safely using per-entry root metadata when global root sources are unavailable.
+entry_root_bls_dir="$tmp_dir/bls-entry-root-fallback-entries"
+mkdir -p "$entry_root_bls_dir"
+entry_root_cmdline_fixture="$tmp_dir/kernel-cmdline-entry-root-fallback"
+cat >"$entry_root_cmdline_fixture" <<'EOF'
+quiet iommu=pt rd.driver.pre=vfio-pci selinux=0 apparmor=0
+EOF
+
+entry_root_entry="$entry_root_bls_dir/system-opensuse-entry-root-recovery.conf"
+cat >"$entry_root_entry" <<'EOF'
+title openSUSE entry-root fallback entry
+linux /vmlinuz-entry-root-fallback
+initrd /initrd-entry-root-fallback
+options splash=silent entrylegacy=1 root=UUID=ENTRYROOT rootflags=subvol=@/.snapshots/77/snapshot rw
+EOF
+
+entry_root_cat_shim_dir="$tmp_dir/entry-root-cat-shim-bin"
+mkdir -p "$entry_root_cat_shim_dir"
+cat_bin="$(command -v cat)"
+cat >"$entry_root_cat_shim_dir/cat" <<EOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "/proc/cmdline" ]]; then
+  printf '%s\n' 'mitigations=auto quiet loglevel=3'
+  exit 0
+fi
+exec "$cat_bin" "\$@"
+EOF
+chmod +x "$entry_root_cat_shim_dir/cat"
+
+old_path="$PATH"
+PATH="$entry_root_cat_shim_dir:$PATH"
+
+is_opensuse_like() { return 0; }
+detect_bootloader() { printf 'grub2-bls\n'; }
+systemd_boot_entries_dir() { printf '%s\n' "$entry_root_bls_dir"; }
+kernel_cmdline_persistence_file() { printf '%s\n' "$entry_root_cmdline_fixture"; }
+bls_find_boot_metadata_options() { return 1; }
+bls_current_mount_root_token() { return 1; }
+bls_current_mount_rootflags_token() { return 1; }
+
+entry_root_sync_rc=0
+sync_bls_entries_from_kernel_cmdline >"$tmp_dir/entry-root-sync.stdout" 2>"$tmp_dir/entry-root-sync.stderr" || entry_root_sync_rc=$?
+
+PATH="$old_path"
+
+assert_eq \
+  "entry-root fallback sync exits successfully when global root metadata sources are unavailable" \
+  "0" \
+  "$entry_root_sync_rc"
+
+entry_root_opts="$(grep -m1 -E '^options[[:space:]]+' "$entry_root_entry" | sed -E 's/^options[[:space:]]+//')"
+assert_cmdline_has_token \
+  "entry-root fallback preserves root token from entry options" \
+  "root=UUID=ENTRYROOT" \
+  "$entry_root_opts"
+assert_cmdline_has_token \
+  "entry-root fallback preserves rootflags token from entry options" \
+  "rootflags=subvol=@/.snapshots/77/snapshot" \
+  "$entry_root_opts"
+assert_cmdline_has_token \
+  "entry-root fallback applies baseline iommu token to entry" \
+  "iommu=pt" \
+  "$entry_root_opts"
+assert_cmdline_has_token \
+  "entry-root fallback applies baseline rd.driver.pre token to entry" \
+  "rd.driver.pre=vfio-pci" \
+  "$entry_root_opts"
+assert_cmdline_lacks_token \
+  "entry-root fallback removes stale legacy token from entry" \
+  "entrylegacy=1" \
+  "$entry_root_opts"
+assert_cmdline_lacks_token \
+  "entry-root fallback removes stale splash token from entry" \
+  "splash=silent" \
+  "$entry_root_opts"
+
+# Test 12: call-site wiring coverage for all boot-option flows.
+# Test 11: call-site wiring coverage for all boot-option flows.
 assert_contains_file \
   "preview helper function exists" \
   "preview_cmdline_change_interactive()" \
