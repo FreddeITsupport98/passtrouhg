@@ -263,8 +263,76 @@ assert_contains_text \
   'watchdog_log_event "$mode" "$session_type" "$action"' \
   "$vfio_source"
 assert_contains_text \
+  "graphics daemon resolves display-manager alternatives fallback for wrapper units" \
+  'if [[ -L /usr/lib/X11/displaymanagers/default-displaymanager ]]; then' \
+  "$vfio_source"
+assert_contains_text \
+  "AUTO mode keeps X11 pinning for X11-prelogin display managers during active X11 sessions" \
+  'if auto_x11_pinning_enabled || [[ "$session_type" == "prelogin-x11" ]] || display_manager_prefers_x11_prelogin; then' \
+  "$vfio_source"
+assert_contains_text \
   "parse args supports standalone install-bootlog mode" \
   '--install-bootlog' \
+  "$vfio_source"
+assert_contains_text \
+  "parse args supports standalone install-graphics-daemon mode" \
+  '--install-graphics-daemon' \
+  "$vfio_source"
+assert_contains_text \
+  "main dispatch includes standalone install-graphics-daemon mode" \
+  'if [[ "$MODE" == "install-graphics-daemon" ]]; then' \
+  "$vfio_source"
+assert_contains_text \
+  "standalone install-graphics-daemon mode uses existing config helper" \
+  'install_graphics_protocol_daemon_from_existing_config' \
+  "$vfio_source"
+assert_contains_text \
+  "write_conf persists watchdog retention default" \
+  'VFIO_GRAPHICS_WATCHDOG_RETENTION_DAYS="10"' \
+  "$vfio_source"
+assert_contains_text \
+  "write_conf persists watchdog max-lines default" \
+  'VFIO_GRAPHICS_WATCHDOG_MAX_LINES="5000"' \
+  "$vfio_source"
+assert_contains_text \
+  "detect JSON output includes configured watchdog retention key" \
+  'configured_graphics_watchdog_retention_days' \
+  "$vfio_source"
+assert_contains_text \
+  "detect JSON output includes configured watchdog max-lines key" \
+  'configured_graphics_watchdog_max_lines' \
+  "$vfio_source"
+assert_contains_text \
+  "graphics daemon template includes watchdog retention helper" \
+  'watchdog_retention_days() {' \
+  "$vfio_source"
+assert_contains_text \
+  "graphics daemon template includes watchdog max-lines helper" \
+  'watchdog_max_lines() {' \
+  "$vfio_source"
+assert_contains_text \
+  "graphics daemon template includes watchdog prune helper" \
+  'prune_watchdog_log() {' \
+  "$vfio_source"
+assert_contains_text \
+  "graphics daemon watchdog log fields include reason dm prelogin and gpu context" \
+  'reason=%s dm=%s prelogin=%s host=%s guest=%s' \
+  "$vfio_source"
+assert_contains_text \
+  "graphics daemon logs watchdog entries with retention and max-lines context" \
+  'retention_days=%s max_lines=%s' \
+  "$vfio_source"
+assert_contains_text \
+  "graphics daemon watchdog transition call includes reason and display-manager context" \
+  'watchdog_log_event "$mode" "$session_type" "$action" "$reason" "$dm_name" "$prelogin_protocol" "$host" "$guest"' \
+  "$vfio_source"
+assert_contains_text \
+  "graphics daemon state key includes reason and display-manager context" \
+  'state_key="$mode:$session_type:$action:$reason:$dm_name:$prelogin_protocol"' \
+  "$vfio_source"
+assert_contains_text \
+  "graphics daemon console transition log includes reason and display-manager context" \
+  'vfio-graphics-protocold: mode=%s session=%s action=%s reason=%s dm=%s prelogin=%s' \
   "$vfio_source"
 
 # --- Test 7: protocol-mode scheduling message remains at end of install flow.
@@ -280,7 +348,6 @@ assert_line_order \
   "install_prelogin_x11_host_gpu_pinning_failsafe \"\$host_gpu\" \"\$guest_gpu\" \"\$graphics_protocol_mode\""
 
 # --- Test 8: removed disabled legacy Xorg helper definitions stay absent.
-# --- Test 6: removed disabled legacy Xorg helper definitions stay absent.
 legacy_hits="$(grep -nE '_legacy_(xorg_busid_from_bdf_disabled|install_xorg_host_gpu_pinning_disabled|install_lightdm_host_gpu_isolation_disabled|maybe_offer_xorg_explicit_prompt_disabled)' "$VFIO_SCRIPT" || true)"
 assert_eq \
   "disabled legacy Xorg helper definitions are absent from vfio.sh" \

@@ -22,6 +22,14 @@ The script is designed to be **interactive, defensive and reversible**, so that 
 > **Important:** This script does *not* create or modify VMs. It only prepares your host so that a hypervisor (libvirt/qemu, etc.) can passthrough the selected PCI devices.
 
 ## Unreleased
+- Added standalone graphics protocol daemon reinstall mode:
+  - new `--install-graphics-daemon` mode installs/reinstalls only `vfio-graphics-protocold` + unit from existing persisted config without rerunning the full interactive wizard.
+  - intended for rolling out protocol-policy/watchdog updates in snapshot workflows where core VFIO setup is already present.
+- Improved graphics protocol watchdog retention and debugging detail:
+  - watchdog entries now include structured decision context (`reason`, `dm`, `prelogin`, `host`, `guest`) in addition to mode/session/action/subvolume.
+  - watchdog log growth is now bounded with retention + hard line-cap pruning (defaults: 10 days, 5000 lines) to reduce long-term space usage.
+  - detect JSON/report output now includes persisted watchdog sizing controls (`configured_graphics_watchdog_retention_days`, `configured_graphics_watchdog_max_lines`).
+- Hardened watchdog-driven graphics protocol AUTO behavior so display-manager detection now falls back through `/usr/lib/X11/displaymanagers/default-displaymanager` on wrapper-based systems (for example openSUSE), and AUTO keeps X11 host-GPU pinning active for X11-prelogin display managers during active X11 sessions to reduce logout/switch black-screen handoff failures.
 - Hardened kernel-cmdline/BLS token parsing helpers to use deterministic whitespace splitting even when the shell runs with a non-default `IFS`, preventing false `root=` metadata misses during openSUSE persistence and BLS synchronization flows.
 - Added functional regression coverage that forces a non-space global `IFS` and verifies `sync_bls_entries_from_kernel_cmdline()` still preserves entry `root=` metadata and applies baseline VFIO/IOMMU parameters.
 - Added openSUSE root-metadata safety fallback from running `/proc/cmdline` for `/etc/kernel/cmdline` persistence candidates when `root=` cannot be recovered from existing cmdline/BLS/current-mount metadata.
@@ -172,7 +180,7 @@ Use `sudo` so that the script can write to `/etc`, `/usr/local`, systemd directo
 The script supports several modes controlled by flags. By default, without any flag, it runs the **interactive installer**.
 
 ```text
-./vfio.sh [--debug] [--dry-run] [--boot-vga-policy auto|strict] [--verify] [--detect] [--sync-bls-only] [--debug-cmdline-tokens] [--entry pattern] [--verify-bls-sync] [--verify-bls-nosnapper] [--create-fallback-entry] [--print-effective-config] [--json] [--self-test] [--health-check] [--health-check-previous] [--health-check-all] [--usb-health-check] [--reset] [--disable-bootlog] [--boot-remove] [--install-usb-bt-mitigation] [--print-fish-completion] [--print-bash-completion] [--print-zsh-completion]
+./vfio.sh [--debug] [--dry-run] [--boot-vga-policy auto|strict] [--verify] [--detect] [--sync-bls-only] [--debug-cmdline-tokens] [--entry pattern] [--verify-bls-sync] [--verify-bls-nosnapper] [--create-fallback-entry] [--print-effective-config] [--json] [--self-test] [--health-check] [--health-check-previous] [--health-check-all] [--usb-health-check] [--reset] [--disable-bootlog] [--boot-remove] [--install-bootlog] [--install-graphics-daemon] [--install-usb-bt-mitigation] [--print-fish-completion] [--print-bash-completion] [--print-zsh-completion]
 ```
 
 ### Common flags
@@ -319,6 +327,10 @@ The script supports several modes controlled by flags. By default, without any f
 - `--install-bootlog`
   - Installs/reinstalls only the optional `vfio-dump-boot-log.service` helper + unit.
   - Useful after snapshot rollbacks where `/etc` systemd state may differ from user-home helper state.
+- `--install-graphics-daemon`
+  - Installs/reinstalls only the graphics protocol daemon (`vfio-graphics-protocold`) and its systemd unit.
+  - Reads persisted daemon/watchdog settings from `/etc/vfio-gpu-passthrough.conf` and keeps activation deferred to next boot (unit is enabled, not started immediately).
+  - Useful for rolling out protocol-policy/watchdog updates without rerunning the full installer wizard.
 
 - `--install-usb-bt-mitigation`
   - Installs only the optional USB Bluetooth mitigation (`vfio-usb-bluetooth` helper + systemd + udev + match-policy config).
@@ -433,7 +445,18 @@ Each line records:
 - selected mode (`AUTO`, `X11`, `WAYLAND`),
 - detected session type,
 - applied action (`x11`, `wayland`, `noop`, etc.),
-- detected root subvolume (`rootflags=subvol=...`).
+- decision context (`reason`, display-manager `dm`, inferred prelogin protocol),
+- host/guest GPU BDF context (`host`, `guest`),
+- detected root subvolume (`rootflags=subvol=...`),
+- effective retention metadata (`retention_days`, `max_lines`).
+
+Watchdog growth controls:
+
+- Defaults:
+  - `VFIO_GRAPHICS_WATCHDOG_RETENTION_DAYS=10`
+  - `VFIO_GRAPHICS_WATCHDOG_MAX_LINES=5000`
+- The daemon performs best-effort timestamp pruning by retention window and then enforces the hard max-line cap.
+- Both knobs can be adjusted in `/etc/vfio-gpu-passthrough.conf` and are surfaced in detect output.
 
 Ownership/perms are normalized back to the desktop user so routine inspection and cleanup stay user-manageable.
 

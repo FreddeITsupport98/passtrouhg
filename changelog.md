@@ -1,5 +1,21 @@
 # Changelog
 ## Unreleased
+- Added standalone graphics protocol daemon reinstall mode in `vfio.sh`:
+  - new `--install-graphics-daemon` mode installs/reinstalls only `vfio-graphics-protocold` + unit using existing persisted config (no full wizard rerun).
+- Improved graphics protocol watchdog retention and decision diagnostics in generated `vfio-graphics-protocold.sh`:
+  - added retention/line-cap helpers (`watchdog_retention_days`, `watchdog_max_lines`, `prune_watchdog_log`) with defaults of 10 days and 5000 lines.
+  - watchdog entries now include structured decision context (`reason`, `dm`, `prelogin`, `host`, `guest`) plus effective retention metadata.
+  - transition state keys and daemon stdout transition lines now include reason/display-manager context for easier AUTO-policy debugging.
+- Extended detect/report wiring in `vfio.sh` for watchdog config visibility:
+  - persisted defaults now include `VFIO_GRAPHICS_WATCHDOG_RETENTION_DAYS=\"10\"` and `VFIO_GRAPHICS_WATCHDOG_MAX_LINES=\"5000\"`.
+  - detect JSON now exposes `configured_graphics_watchdog_retention_days` and `configured_graphics_watchdog_max_lines`.
+  - human detect output now reports normalized graphics-daemon interval, watchdog retention days, and watchdog max-line cap values.
+- Updated `regression/protocol-mode-regression.sh` coverage:
+  - added static assertions for `--install-graphics-daemon` parser/dispatch wiring and existing-config reinstall helper path.
+  - added assertions for watchdog retention/max config persistence, detect JSON watchdog keys, and richer watchdog/state transition context fields.
+- Hardened watchdog-correlated graphics protocol AUTO policy in `vfio.sh` for logout/session-switch stability:
+  - generated `vfio-graphics-protocold.sh` now resolves active display-manager type via `/usr/lib/X11/displaymanagers/default-displaymanager` fallback when wrapper units (for example openSUSE `display-manager.service`) hide the concrete DM service name.
+  - AUTO policy now keeps X11 host-GPU pinning active during X11 sessions when the detected display manager uses X11 prelogin greeters (for example SDDM/LightDM/LXDM/XDM), reducing black-screen risk during logout/greeter restart handoff.
 - Added standalone boot-log dumper reinstall mode in `vfio.sh`:
   - new `--install-bootlog` mode installs/reinstalls only the optional boot-log helper + unit without rerunning full interactive setup.
   - intended for snapshot workflows where `/etc` systemd state may diverge from user-home helper files after rollback.

@@ -47,11 +47,13 @@ DRY_RUN=0
 JSON_OUTPUT=0
 DEBUG_CMDLINE_TOKENS=0
 DEBUG_CMDLINE_TOKENS_ENTRY_FILTER=""
-MODE="install"   # install | verify | detect | sync-bls-only | debug-cmdline-tokens | verify-bls-sync | verify-bls-nosnapper | create-fallback-entry | self-test | health-check | reset | completion printers
+MODE="install"   # install | verify | detect | sync-bls-only | debug-cmdline-tokens | verify-bls-sync | verify-bls-nosnapper | create-fallback-entry | self-test | health-check | reset | install-bootlog | install-graphics-daemon | completion printers
 BOOT_VGA_POLICY_OVERRIDE=""   # AUTO | STRICT (empty = use script default)
 GRAPHICS_PROTOCOL_OVERRIDE="" # AUTO | X11 | WAYLAND (empty = auto-detect)
 INSTALL_GRAPHICS_DAEMON=1     # 1=install graphics protocol daemon, 0=skip
 GRAPHICS_DAEMON_INTERVAL_DEFAULT=2
+GRAPHICS_WATCHDOG_RETENTION_DAYS_DEFAULT=10
+GRAPHICS_WATCHDOG_MAX_LINES_DEFAULT=5000
 GRAPHICS_DAEMON_INTERVAL_OVERRIDE="" # positive integer seconds (empty = default)
 RUN_TS="$(date +%Y%m%d-%H%M%S)"
 
@@ -117,22 +119,34 @@ run() {
   fi
   "$@"
 }
+normalize_display_manager_name() {
+  # Normalize service/script names to canonical display-manager IDs.
+  # Examples:
+  #   sddm.service -> sddm
+  #   /usr/lib/X11/displaymanagers/sddm -> sddm
+  local raw="${1:-}"
+  raw="${raw##*/}"
+  raw="${raw%.service}"
+  raw="${raw,,}"
+  case "$raw" in
+    lightdm|sddm|lxdm|xdm) printf '%s\n' "$raw"; return 0 ;;
+    gdm|gdm3) printf '%s\n' "gdm"; return 0 ;;
+  esac
+  return 1
+}
 
 
 detect_display_manager() {
   # Return one of: lightdm | sddm | gdm | lxdm | xdm | none
   # Prefer the active display-manager.service symlink when present.
-  local dm_link base
+  local dm_link base dm
   if [[ -L /etc/systemd/system/display-manager.service ]]; then
     dm_link="$(readlink -f /etc/systemd/system/display-manager.service 2>/dev/null || true)"
     base="$(basename "$dm_link")"
-    case "$base" in
-      lightdm.service) echo "lightdm"; return 0;;
-      sddm.service) echo "sddm"; return 0;;
-      gdm.service|gdm3.service) echo "gdm"; return 0;;
-      lxdm.service) echo "lxdm"; return 0;;
-      xdm.service) echo "xdm"; return 0;;
-    esac
+    if dm="$(normalize_display_manager_name "$base")"; then
+      echo "$dm"
+      return 0
+    fi
     case "$dm_link" in
       *lightdm*) echo "lightdm"; return 0;;
       *sddm*) echo "sddm"; return 0;;
@@ -140,6 +154,17 @@ detect_display_manager() {
       *lxdm*) echo "lxdm"; return 0;;
       *xdm*) echo "xdm"; return 0;;
     esac
+  fi
+
+  # openSUSE frequently points display-manager.service to a wrapper script.
+  # In that case resolve the active DM through alternatives.
+  if [[ -L /usr/lib/X11/displaymanagers/default-displaymanager ]]; then
+    dm_link="$(readlink -f /usr/lib/X11/displaymanagers/default-displaymanager 2>/dev/null || true)"
+    base="$(basename "$dm_link")"
+    if dm="$(normalize_display_manager_name "$base")"; then
+      echo "$dm"
+      return 0
+    fi
   fi
 
   # Fall back to installed unit files / config presence.
@@ -597,6 +622,7 @@ complete -c $cmd -l reset -d 'Remove VFIO setup installed by this script'
 complete -c $cmd -l disable-bootlog -d 'Disable/remove optional VFIO boot-log dumper'
 complete -c $cmd -l boot-remove -d 'Alias of --disable-bootlog'
 complete -c $cmd -l install-bootlog -d 'Install/reinstall only optional VFIO boot-log dumper'
+complete -c $cmd -l install-graphics-daemon -d 'Install/reinstall only VFIO graphics protocol daemon'
 complete -c $cmd -l install-usb-bt-mitigation -d 'Install only optional USB Bluetooth mitigation'
 complete -c $cmd -l print-fish-completion -d 'Print fish completion script'
 complete -c $cmd -l print-bash-completion -d 'Print bash completion script'
@@ -613,7 +639,7 @@ _vfio_sh_complete() {
   COMPREPLY=()
   cur="\${COMP_WORDS[COMP_CWORD]}"
   prev="\${COMP_WORDS[COMP_CWORD-1]}"
-  opts="--help -h --debug --dry-run --no-tui --boot-vga-policy --graphics-protocol --graphics-daemon-interval --no-graphics-daemon --verify --detect --sync-bls-only --debug-cmdline-tokens --entry --verify-bls-sync --verify-bls-nosnapper --create-fallback-entry --print-effective-config --json --self-test --health-check --health-check-previous --health-check-all --usb-health-check --reset --disable-bootlog --boot-remove --install-bootlog --install-usb-bt-mitigation --print-fish-completion --print-bash-completion --print-zsh-completion"
+  opts="--help -h --debug --dry-run --no-tui --boot-vga-policy --graphics-protocol --graphics-daemon-interval --no-graphics-daemon --verify --detect --sync-bls-only --debug-cmdline-tokens --entry --verify-bls-sync --verify-bls-nosnapper --create-fallback-entry --print-effective-config --json --self-test --health-check --health-check-previous --health-check-all --usb-health-check --reset --disable-bootlog --boot-remove --install-bootlog --install-graphics-daemon --install-usb-bt-mitigation --print-fish-completion --print-bash-completion --print-zsh-completion"
 
   if [[ "\$prev" == "--boot-vga-policy" ]]; then
     COMPREPLY=(\$(compgen -W "auto strict" -- "\$cur"))
@@ -673,6 +699,7 @@ _vfio_sh_complete() {
     '--disable-bootlog[Disable/remove optional VFIO boot-log dumper]' \\
     '--boot-remove[Alias of --disable-bootlog]' \\
     '--install-bootlog[Install/reinstall only optional VFIO boot-log dumper]' \
+    '--install-graphics-daemon[Install/reinstall only VFIO graphics protocol daemon]' \
     '--install-usb-bt-mitigation[Install only optional USB Bluetooth mitigation]' \\
     '--print-fish-completion[Print fish completion script]' \\
     '--print-bash-completion[Print bash completion script]' \\
@@ -1271,7 +1298,7 @@ prompt_yn() {
 
 usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--boot-vga-policy auto|strict] [--graphics-protocol auto|x11|wayland] [--graphics-daemon-interval seconds] [--no-graphics-daemon] [--verify] [--detect] [--sync-bls-only] [--debug-cmdline-tokens] [--entry pattern] [--verify-bls-sync] [--verify-bls-nosnapper] [--create-fallback-entry] [--print-effective-config] [--json] [--self-test] [--health-check] [--health-check-previous] [--health-check-all] [--usb-health-check] [--reset] [--disable-bootlog] [--boot-remove] [--install-bootlog] [--install-usb-bt-mitigation] [--print-fish-completion] [--print-bash-completion] [--print-zsh-completion]
+Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--boot-vga-policy auto|strict] [--graphics-protocol auto|x11|wayland] [--graphics-daemon-interval seconds] [--no-graphics-daemon] [--verify] [--detect] [--sync-bls-only] [--debug-cmdline-tokens] [--entry pattern] [--verify-bls-sync] [--verify-bls-nosnapper] [--create-fallback-entry] [--print-effective-config] [--json] [--self-test] [--health-check] [--health-check-previous] [--health-check-all] [--usb-health-check] [--reset] [--disable-bootlog] [--boot-remove] [--install-bootlog] [--install-graphics-daemon] [--install-usb-bt-mitigation] [--print-fish-completion] [--print-bash-completion] [--print-zsh-completion]
 
   --debug           Enable verbose debug logging (and bash xtrace).
   --dry-run         Show actions but do not write files / run system-changing commands.
@@ -1320,6 +1347,9 @@ Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--boot-vga-policy auto|str
   --boot-remove     Alias of --disable-bootlog.
   --install-bootlog Install/reinstall only the optional VFIO boot log dumper helper + systemd unit.
                    Useful after snapshot rollbacks where /etc systemd state differs from user-home helper state.
+  --install-graphics-daemon
+                   Install/reinstall only the VFIO graphics protocol daemon + systemd unit.
+                   Useful for rolling out daemon/watchdog logic updates without re-running the full wizard.
   --install-usb-bt-mitigation
                    Install ONLY the optional USB Bluetooth reset-spam mitigation (systemd+udev). This detaches USB Bluetooth adapters from btusb on the host but keeps them available for VM passthrough.
   --print-fish-completion
@@ -1475,6 +1505,9 @@ parse_args() {
         ;;
       --install-bootlog)
         MODE="install-bootlog"
+        ;;
+      --install-graphics-daemon)
+        MODE="install-graphics-daemon"
         ;;
       --install-usb-bt-mitigation)
         MODE="install-usb-bt-mitigation"
@@ -2924,12 +2957,14 @@ detect_existing_vfio_report() {
   xfwm4_status="$(xfwm4_stack_status)"
 
   if (( JSON_OUTPUT )); then
-    local opensuse_like_json accountsservice_present_json configured_graphics_protocol_mode configured_graphics_daemon_interval hc status
+    local opensuse_like_json accountsservice_present_json configured_graphics_protocol_mode configured_graphics_daemon_interval configured_graphics_watchdog_retention_days configured_graphics_watchdog_max_lines hc status
     local fallback_report fallback_status fallback_reason fallback_source_entry fallback_target_entry fallback_source_name fallback_target_name fallback_applicable_json
     opensuse_like_json=false
     accountsservice_present_json=false
     configured_graphics_protocol_mode="AUTO"
     configured_graphics_daemon_interval="$GRAPHICS_DAEMON_INTERVAL_DEFAULT"
+    configured_graphics_watchdog_retention_days="$GRAPHICS_WATCHDOG_RETENTION_DAYS_DEFAULT"
+    configured_graphics_watchdog_max_lines="$GRAPHICS_WATCHDOG_MAX_LINES_DEFAULT"
     fallback_status="NOT_APPLICABLE"
     fallback_reason=""
     fallback_source_entry=""
@@ -2951,13 +2986,9 @@ detect_existing_vfio_report() {
         X11|WAYLAND|AUTO) ;;
         *) configured_graphics_protocol_mode="AUTO" ;;
       esac
-      configured_graphics_daemon_interval="$(awk -F= '/^VFIO_GRAPHICS_DAEMON_INTERVAL=/{v=$2; gsub(/"/,"",v); print v; exit}' "$CONF_FILE" 2>/dev/null || true)"
-      configured_graphics_daemon_interval="$(trim "${configured_graphics_daemon_interval:-}")"
-      if [[ ! "$configured_graphics_daemon_interval" =~ ^[0-9]+$ ]] || (( 10#$configured_graphics_daemon_interval < 1 || 10#$configured_graphics_daemon_interval > 3600 )); then
-        configured_graphics_daemon_interval="$GRAPHICS_DAEMON_INTERVAL_DEFAULT"
-      else
-        configured_graphics_daemon_interval="$((10#$configured_graphics_daemon_interval))"
-      fi
+      configured_graphics_daemon_interval="$(graphics_daemon_interval_from_conf_or_default)"
+      configured_graphics_watchdog_retention_days="$(graphics_watchdog_retention_days_from_conf_or_default)"
+      configured_graphics_watchdog_max_lines="$(graphics_watchdog_max_lines_from_conf_or_default)"
     fi
     hc="$(vfio_config_health)"
     status="$(printf '%s\n' "$hc" | awk -F= '/^STATUS=/{print $2; exit}')"
@@ -2994,6 +3025,8 @@ detect_existing_vfio_report() {
     printf '  \"graphics_protocol_mode\": \"%s\",\n' "$graphics_protocol_mode"
     printf '  \"configured_graphics_protocol_mode\": \"%s\",\n' "$configured_graphics_protocol_mode"
     printf '  \"configured_graphics_daemon_interval_seconds\": %s,\n' "$configured_graphics_daemon_interval"
+    printf '  \"configured_graphics_watchdog_retention_days\": %s,\n' "$configured_graphics_watchdog_retention_days"
+    printf '  \"configured_graphics_watchdog_max_lines\": %s,\n' "$configured_graphics_watchdog_max_lines"
     printf '  \"window_manager_openbox\": \"%s\",\n' "$openbox_status"
     printf '  \"window_manager_i3\": \"%s\",\n' "$i3_status"
     printf '  \"window_manager_bspwm\": \"%s\",\n' "$bspwm_status"
@@ -3115,12 +3148,24 @@ detect_existing_vfio_report() {
     fi
     # shellcheck disable=SC1090
     . "$CONF_FILE"
+    local configured_graphics_protocol configured_graphics_daemon_interval_effective configured_graphics_watchdog_retention_days_effective configured_graphics_watchdog_max_lines_effective
+    configured_graphics_protocol="${GRAPHICS_PROTOCOL_MODE:-AUTO}"
+    configured_graphics_protocol="${configured_graphics_protocol^^}"
+    case "$configured_graphics_protocol" in
+      X11|WAYLAND|AUTO) ;;
+      *) configured_graphics_protocol="AUTO" ;;
+    esac
+    configured_graphics_daemon_interval_effective="$(graphics_daemon_interval_from_conf_or_default)"
+    configured_graphics_watchdog_retention_days_effective="$(graphics_watchdog_retention_days_from_conf_or_default)"
+    configured_graphics_watchdog_max_lines_effective="$(graphics_watchdog_max_lines_from_conf_or_default)"
     print_kv "Configured host GPU" "${HOST_GPU_BDF:-<unset>}"
     print_kv "Configured guest GPU" "${GUEST_GPU_BDF:-<unset>}"
     print_kv "Configured host audio" "${HOST_AUDIO_BDFS_CSV:-<unset>}"
     print_kv "Configured guest audio" "${GUEST_AUDIO_BDFS_CSV:-<unset>}"
-    print_kv "Configured graphics protocol" "${GRAPHICS_PROTOCOL_MODE:-AUTO}"
-    print_kv "Configured graphics daemon interval" "${VFIO_GRAPHICS_DAEMON_INTERVAL:-$GRAPHICS_DAEMON_INTERVAL_DEFAULT}s"
+    print_kv "Configured graphics protocol" "$configured_graphics_protocol"
+    print_kv "Configured graphics daemon interval" "${configured_graphics_daemon_interval_effective}s"
+    print_kv "Configured watchdog retention" "${configured_graphics_watchdog_retention_days_effective} day(s)"
+    print_kv "Configured watchdog max lines" "$configured_graphics_watchdog_max_lines_effective"
     if [[ -n "${GUEST_GPU_BDF:-}" ]]; then
       local rebar_state above4g_state
       rebar_state="$(rebar_status_for_bdf "$GUEST_GPU_BDF")"
@@ -3873,6 +3918,11 @@ GUEST_AUDIO_BDFS_CSV="$guest_audio_bdfs_csv"
 GUEST_GPU_VENDOR_ID="$guest_vendor"
 GRAPHICS_PROTOCOL_MODE="$graphics_protocol_mode"
 VFIO_GRAPHICS_DAEMON_INTERVAL="$graphics_daemon_interval"
+# Watchdog log retention and growth controls for vfio-graphics-protocold:
+# - retention days is best-effort timestamp pruning window.
+# - max lines is a hard cap after pruning to prevent unbounded growth.
+VFIO_GRAPHICS_WATCHDOG_RETENTION_DAYS="10"
+VFIO_GRAPHICS_WATCHDOG_MAX_LINES="5000"
 # AUTO-mode X11 pinning policy:
 # - 1 (default): allow X11 host-GPU pinning in AUTO mode for pre-login X11
 #                display managers (for example SDDM/LightDM) and active X11 sessions.
@@ -7055,6 +7105,8 @@ WATCHDOG_TARGET_GROUP="__VFIO_GRAPHICS_WATCHDOG_GROUP__"
 WATCHDOG_LOG_DIR="$(dirname "$WATCHDOG_LOG")"
 DEFAULT_SLEEP_SECS=2
 DEFAULT_AUTO_X11_PINNING=0
+DEFAULT_WATCHDOG_RETENTION_DAYS=10
+DEFAULT_WATCHDOG_MAX_LINES=5000
 
 trim() {
   local s="$*"
@@ -7096,6 +7148,64 @@ auto_x11_pinning_enabled() {
       ;;
   esac
 }
+watchdog_retention_days() {
+  local raw=""
+  if [[ -n "${VFIO_GRAPHICS_WATCHDOG_RETENTION_DAYS:-}" ]]; then
+    raw="${VFIO_GRAPHICS_WATCHDOG_RETENTION_DAYS}"
+  elif [[ -f "$CONF_FILE" ]]; then
+    raw="$(awk -F= '/^VFIO_GRAPHICS_WATCHDOG_RETENTION_DAYS=/{v=$2; gsub(/"/,"",v); print v; exit}' "$CONF_FILE" 2>/dev/null || true)"
+  fi
+  raw="$(trim "$raw")"
+  if [[ "$raw" =~ ^[0-9]+$ ]] && (( 10#$raw >= 1 && 10#$raw <= 365 )); then
+    printf '%s\n' "$((10#$raw))"
+  else
+    printf '%s\n' "$DEFAULT_WATCHDOG_RETENTION_DAYS"
+  fi
+}
+watchdog_max_lines() {
+  local raw=""
+  if [[ -n "${VFIO_GRAPHICS_WATCHDOG_MAX_LINES:-}" ]]; then
+    raw="${VFIO_GRAPHICS_WATCHDOG_MAX_LINES}"
+  elif [[ -f "$CONF_FILE" ]]; then
+    raw="$(awk -F= '/^VFIO_GRAPHICS_WATCHDOG_MAX_LINES=/{v=$2; gsub(/"/,"",v); print v; exit}' "$CONF_FILE" 2>/dev/null || true)"
+  fi
+  raw="$(trim "$raw")"
+  if [[ "$raw" =~ ^[0-9]+$ ]] && (( 10#$raw >= 200 && 10#$raw <= 500000 )); then
+    printf '%s\n' "$((10#$raw))"
+  else
+    printf '%s\n' "$DEFAULT_WATCHDOG_MAX_LINES"
+  fi
+}
+prune_watchdog_log() {
+  [[ -f "$WATCHDOG_LOG" ]] || return 0
+  local retention_days max_lines cutoff_epoch line ts ts_epoch line_count
+  local tmp
+  retention_days="$(watchdog_retention_days)"
+  max_lines="$(watchdog_max_lines)"
+  cutoff_epoch="$(date -u -d "-${retention_days} days" +%s 2>/dev/null || true)"
+  tmp="$(mktemp)"
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    if [[ -n "$cutoff_epoch" ]]; then
+      ts="${line%% *}"
+      ts_epoch="$(date -u -d "$ts" +%s 2>/dev/null || true)"
+      if [[ -n "$ts_epoch" ]] && (( ts_epoch < cutoff_epoch )); then
+        continue
+      fi
+    fi
+    printf '%s\n' "$line" >>"$tmp"
+  done < "$WATCHDOG_LOG"
+  line_count="$(wc -l < "$tmp" 2>/dev/null || echo 0)"
+  if [[ "$line_count" =~ ^[0-9]+$ ]] && (( line_count > max_lines )); then
+    tail -n "$max_lines" "$tmp" >"${tmp}.tail" 2>/dev/null || true
+    mv -f "${tmp}.tail" "$tmp" 2>/dev/null || true
+  fi
+  if cmp -s "$tmp" "$WATCHDOG_LOG"; then
+    rm -f "$tmp" || true
+  else
+    mv -f "$tmp" "$WATCHDOG_LOG" 2>/dev/null || true
+  fi
+}
 
 xorg_busid_from_bdf() {
   local bdf="$1"
@@ -7109,18 +7219,36 @@ xorg_busid_from_bdf() {
   printf 'PCI:%d:%d:%d\n' "$((16#$bus_hex))" "$((16#$dev_hex))" "$func_dec"
 }
 
+normalize_display_manager_name() {
+  local raw="$1"
+  raw="${raw##*/}"
+  raw="${raw%.service}"
+  raw="${raw,,}"
+  case "$raw" in
+    lightdm|sddm|lxdm|xdm) echo "$raw"; return 0 ;;
+    gdm|gdm3) echo "gdm"; return 0 ;;
+  esac
+  return 1
+}
 display_manager_name() {
-  local dm_link base
+  local dm_link base dm
   if [[ -L /etc/systemd/system/display-manager.service ]]; then
     dm_link="$(readlink -f /etc/systemd/system/display-manager.service 2>/dev/null || true)"
     base="$(basename "${dm_link:-}")"
-    case "$base" in
-      lightdm.service) echo "lightdm"; return 0 ;;
-      sddm.service) echo "sddm"; return 0 ;;
-      gdm.service|gdm3.service) echo "gdm"; return 0 ;;
-      lxdm.service) echo "lxdm"; return 0 ;;
-      xdm.service) echo "xdm"; return 0 ;;
-    esac
+    if dm="$(normalize_display_manager_name "$base")"; then
+      echo "$dm"
+      return 0
+    fi
+  fi
+  # openSUSE often uses a display-manager wrapper unit; resolve the active DM
+  # from alternatives as a fallback so protocol policy can classify prelogin mode.
+  if [[ -L /usr/lib/X11/displaymanagers/default-displaymanager ]]; then
+    dm_link="$(readlink -f /usr/lib/X11/displaymanagers/default-displaymanager 2>/dev/null || true)"
+    base="$(basename "${dm_link:-}")"
+    if dm="$(normalize_display_manager_name "$base")"; then
+      echo "$dm"
+      return 0
+    fi
   fi
   echo "none"
 }
@@ -7265,13 +7393,31 @@ current_root_subvolume() {
   printf '%s\n' "${subvol:-unknown}"
 }
 watchdog_log_event() {
-  local mode="$1" session_type="$2" action="$3" ts root_subvol
+  local mode="$1" session_type="$2" action="$3"
+  local reason="${4:-unspecified}" dm_name="${5:-none}" prelogin_protocol="${6:-unknown}"
+  local host_gpu="${7:-unknown}" guest_gpu="${8:-unknown}"
+  local ts root_subvol retention_days max_lines
+  reason="$(trim "$reason")"
+  reason="${reason//[[:space:]]/-}"
+  [[ -n "$reason" ]] || reason="unspecified"
+  dm_name="$(trim "$dm_name")"
+  [[ -n "$dm_name" ]] || dm_name="none"
+  prelogin_protocol="$(trim "$prelogin_protocol")"
+  [[ -n "$prelogin_protocol" ]] || prelogin_protocol="unknown"
+  host_gpu="$(trim "$host_gpu")"
+  [[ -n "$host_gpu" ]] || host_gpu="unknown"
+  guest_gpu="$(trim "$guest_gpu")"
+  [[ -n "$guest_gpu" ]] || guest_gpu="unknown"
   ts="$(date -Is 2>/dev/null || true)"
   [[ -n "$ts" ]] || ts="unknown-time"
   root_subvol="$(current_root_subvolume)"
+  retention_days="$(watchdog_retention_days)"
+  max_lines="$(watchdog_max_lines)"
   mkdir -p "$WATCHDOG_LOG_DIR" 2>/dev/null || true
-  printf '%s mode=%s session=%s action=%s subvol=%s\n' \
-    "$ts" "$mode" "$session_type" "$action" "$root_subvol" >>"$WATCHDOG_LOG" 2>/dev/null || true
+  prune_watchdog_log || true
+  printf '%s mode=%s session=%s action=%s reason=%s dm=%s prelogin=%s host=%s guest=%s subvol=%s retention_days=%s max_lines=%s\n' \
+    "$ts" "$mode" "$session_type" "$action" "$reason" "$dm_name" "$prelogin_protocol" "$host_gpu" "$guest_gpu" "$root_subvol" "$retention_days" "$max_lines" >>"$WATCHDOG_LOG" 2>/dev/null || true
+  prune_watchdog_log || true
   if [[ -n "$WATCHDOG_TARGET_USER" && -n "$WATCHDOG_TARGET_GROUP" ]]; then
     chown "$WATCHDOG_TARGET_USER:$WATCHDOG_TARGET_GROUP" "$WATCHDOG_LOG_DIR" "$WATCHDOG_LOG" 2>/dev/null || true
     chmod u+rwX "$WATCHDOG_LOG_DIR" "$WATCHDOG_LOG" 2>/dev/null || true
@@ -7284,42 +7430,52 @@ apply_policy_once() {
   # shellcheck disable=SC1090
   . "$CONF_FILE"
 
-  local mode host guest session_type inferred_prelogin action prev
+  local mode host guest session_type inferred_prelogin action reason prev dm_name prelogin_protocol state_key
   mode="$(trim "${GRAPHICS_PROTOCOL_MODE:-AUTO}")"
   mode="${mode^^}"
   host="$(trim "${HOST_GPU_BDF:-}")"
   guest="$(trim "${GUEST_GPU_BDF:-}")"
+  dm_name="$(display_manager_name)"
   session_type="unknown"
   action="noop"
+  reason="noop"
+  prelogin_protocol="unknown"
 
   if [[ "$prelogin" == "1" ]]; then
     inferred_prelogin="$(infer_prelogin_protocol_mode)"
+    prelogin_protocol="$inferred_prelogin"
     case "$mode" in
       X11)
         action="x11"
         session_type="prelogin-x11"
+        reason="forced-x11-mode"
         ;;
       WAYLAND)
         action="wayland"
         session_type="prelogin-wayland"
+        reason="forced-wayland-mode"
         ;;
       AUTO)
         case "$inferred_prelogin" in
           x11)
             action="x11"
             session_type="prelogin-x11"
+            reason="auto-prelogin-x11"
             ;;
           wayland)
             action="wayland"
             session_type="prelogin-wayland"
+            reason="auto-prelogin-wayland"
             ;;
           *)
             if auto_x11_pinning_enabled; then
               action="x11"
               session_type="prelogin-auto-x11-fallback"
+              reason="auto-prelogin-fallback-x11"
             else
               action="noop"
               session_type="prelogin-unknown"
+              reason="auto-prelogin-unknown"
             fi
             ;;
         esac
@@ -7327,12 +7483,14 @@ apply_policy_once() {
       *)
         action="noop"
         session_type="prelogin-unknown"
+        reason="invalid-mode"
         ;;
     esac
   else
+    prelogin_protocol="$(infer_prelogin_protocol_mode)"
     session_type="$(detect_active_session_type)"
     if [[ "$session_type" == "unknown" ]] && ! active_user_session_exists; then
-      inferred_prelogin="$(infer_prelogin_protocol_mode)"
+      inferred_prelogin="$prelogin_protocol"
       case "$inferred_prelogin" in
         x11) session_type="prelogin-x11" ;;
         wayland) session_type="prelogin-wayland" ;;
@@ -7343,33 +7501,47 @@ apply_policy_once() {
     case "$mode" in
       X11)
         action="x11"
+        reason="forced-x11-mode"
         ;;
       WAYLAND)
         action="wayland"
+        reason="forced-wayland-mode"
         ;;
       AUTO)
         case "$session_type" in
           x11|prelogin-x11)
-            if auto_x11_pinning_enabled || [[ "$session_type" == "prelogin-x11" ]]; then
+            if auto_x11_pinning_enabled || [[ "$session_type" == "prelogin-x11" ]] || display_manager_prefers_x11_prelogin; then
               action="x11"
+              if auto_x11_pinning_enabled; then
+                reason="auto-x11-pinning-enabled"
+              elif [[ "$session_type" == "prelogin-x11" ]]; then
+                reason="auto-prelogin-x11-session"
+              else
+                reason="auto-dm-prefers-x11-prelogin"
+              fi
             else
               # Conservative AUTO default for active X11 sessions when pinning override is disabled.
               action="auto-safe-no-x11"
+              reason="auto-x11-pinning-disabled"
             fi
             ;;
           wayland|prelogin-wayland)
             action="wayland"
+            reason="auto-wayland-session"
             ;;
           prelogin-auto-x11-fallback)
             action="x11"
+            reason="auto-prelogin-fallback-x11"
             ;;
           *)
             action="noop"
+            reason="auto-unknown-session"
             ;;
         esac
         ;;
       *)
         action="noop"
+        reason="invalid-mode"
         ;;
     esac
   fi
@@ -7388,11 +7560,12 @@ apply_policy_once() {
       ;;
   esac
 
+  state_key="$mode:$session_type:$action:$reason:$dm_name:$prelogin_protocol"
   prev="$(cat "$STATE_FILE" 2>/dev/null || true)"
-  if [[ "$prev" != "$mode:$session_type:$action" ]]; then
-    printf '%s\n' "$mode:$session_type:$action" >"$STATE_FILE" 2>/dev/null || true
-    printf 'vfio-graphics-protocold: mode=%s session=%s action=%s\n' "$mode" "$session_type" "$action"
-    watchdog_log_event "$mode" "$session_type" "$action"
+  if [[ "$prev" != "$state_key" ]]; then
+    printf '%s\n' "$state_key" >"$STATE_FILE" 2>/dev/null || true
+    printf 'vfio-graphics-protocold: mode=%s session=%s action=%s reason=%s dm=%s prelogin=%s\n' "$mode" "$session_type" "$action" "$reason" "$dm_name" "$prelogin_protocol"
+    watchdog_log_event "$mode" "$session_type" "$action" "$reason" "$dm_name" "$prelogin_protocol" "$host" "$guest"
   fi
 }
 
@@ -7462,6 +7635,48 @@ EOF
   say "Graphics protocol watchdog log:      $watchdog_log"
   say "Graphics daemon polling interval:    ${daemon_interval}s"
   note "Graphics protocol daemon will activate on next boot (not started immediately)."
+}
+graphics_daemon_interval_from_conf_or_default() {
+  local interval="$GRAPHICS_DAEMON_INTERVAL_DEFAULT"
+  if readable_file "$CONF_FILE"; then
+    local raw
+    raw="$(awk -F= '/^VFIO_GRAPHICS_DAEMON_INTERVAL=/{v=$2; gsub(/"/,"",v); print v; exit}' "$CONF_FILE" 2>/dev/null || true)"
+    raw="$(trim "${raw:-}")"
+    if [[ "$raw" =~ ^[0-9]+$ ]] && (( 10#$raw >= 1 && 10#$raw <= 3600 )); then
+      interval="$((10#$raw))"
+    fi
+  fi
+  printf '%s\n' "$interval"
+}
+graphics_watchdog_retention_days_from_conf_or_default() {
+  local retention_days="$GRAPHICS_WATCHDOG_RETENTION_DAYS_DEFAULT"
+  if readable_file "$CONF_FILE"; then
+    local raw
+    raw="$(awk -F= '/^VFIO_GRAPHICS_WATCHDOG_RETENTION_DAYS=/{v=$2; gsub(/"/,"",v); print v; exit}' "$CONF_FILE" 2>/dev/null || true)"
+    raw="$(trim "${raw:-}")"
+    if [[ "$raw" =~ ^[0-9]+$ ]] && (( 10#$raw >= 1 && 10#$raw <= 365 )); then
+      retention_days="$((10#$raw))"
+    fi
+  fi
+  printf '%s\n' "$retention_days"
+}
+graphics_watchdog_max_lines_from_conf_or_default() {
+  local max_lines="$GRAPHICS_WATCHDOG_MAX_LINES_DEFAULT"
+  if readable_file "$CONF_FILE"; then
+    local raw
+    raw="$(awk -F= '/^VFIO_GRAPHICS_WATCHDOG_MAX_LINES=/{v=$2; gsub(/"/,"",v); print v; exit}' "$CONF_FILE" 2>/dev/null || true)"
+    raw="$(trim "${raw:-}")"
+    if [[ "$raw" =~ ^[0-9]+$ ]] && (( 10#$raw >= 200 && 10#$raw <= 500000 )); then
+      max_lines="$((10#$raw))"
+    fi
+  fi
+  printf '%s\n' "$max_lines"
+}
+install_graphics_protocol_daemon_from_existing_config() {
+  readable_file "$CONF_FILE" || die "Missing $CONF_FILE. Run the full installer first, or create the config before reinstalling only the graphics daemon."
+  local interval
+  interval="$(graphics_daemon_interval_from_conf_or_default)"
+  install_graphics_protocol_daemon "$interval"
 }
 
 # ---------------- Host audio default (PipeWire/PulseAudio) ----------------
@@ -11000,6 +11215,14 @@ main() {
     require_systemd
     require_writable_root_or_die
     install_bootlog_dumper
+    exit 0
+  fi
+
+  if [[ "$MODE" == "install-graphics-daemon" ]]; then
+    require_root "$@"
+    require_systemd
+    require_writable_root_or_die
+    install_graphics_protocol_daemon_from_existing_config
     exit 0
   fi
 
