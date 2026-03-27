@@ -1,5 +1,11 @@
 # Changelog
 ## Unreleased
+- Updated graphics daemon polling defaults in `vfio.sh`:
+  - `GRAPHICS_DAEMON_INTERVAL_DEFAULT` changed from `2` to `1`.
+  - generated `vfio-graphics-protocold.sh` fallback polling default (`DEFAULT_SLEEP_SECS`) changed from `2` to `1`.
+- Added `regression/watchdog-detect-defaults-regression.sh`:
+  - validates detect JSON watchdog sizing output uses persisted retention/max-line values when valid.
+  - validates fallback to default watchdog retention/max-line values when config is missing or out-of-range.
 - Added standalone graphics protocol daemon reinstall mode in `vfio.sh`:
   - new `--install-graphics-daemon` mode installs/reinstalls only `vfio-graphics-protocold` + unit using existing persisted config (no full wizard rerun).
 - Improved graphics protocol watchdog retention and decision diagnostics in generated `vfio-graphics-protocold.sh`:

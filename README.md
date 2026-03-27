@@ -22,6 +22,12 @@ The script is designed to be **interactive, defensive and reversible**, so that 
 > **Important:** This script does *not* create or modify VMs. It only prepares your host so that a hypervisor (libvirt/qemu, etc.) can passthrough the selected PCI devices.
 
 ## Unreleased
+- Updated graphics protocol daemon polling defaults to 1 second:
+  - installer/runtime default interval now uses `GRAPHICS_DAEMON_INTERVAL_DEFAULT=1`.
+  - generated daemon fallback poll interval now uses `DEFAULT_SLEEP_SECS=1`.
+- Added dedicated detect-output regression coverage for watchdog sizing defaults/fallback:
+  - new `regression/watchdog-detect-defaults-regression.sh` validates that detect JSON surfaces persisted watchdog retention/max-line values when valid.
+  - also validates default fallback behavior when watchdog config is missing or out-of-range.
 - Added standalone graphics protocol daemon reinstall mode:
   - new `--install-graphics-daemon` mode installs/reinstalls only `vfio-graphics-protocold` + unit from existing persisted config without rerunning the full interactive wizard.
   - intended for rolling out protocol-policy/watchdog updates in snapshot workflows where core VFIO setup is already present.
