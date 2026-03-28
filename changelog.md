@@ -1,5 +1,14 @@
 # Changelog
 ## Unreleased
+- 2026-03-28 21:07 UTC: Expanded targeted regression depth for recent USB mitigation changes:
+  - `regression/usb-ethernet-eee-regression.sh` now verifies no-color fallback output (`ENABLE_COLOR=0`) keeps plain numbered EEE picker indices while still persisting selected USB Ethernet IDs,
+  - `regression/reset-usb-mitigation-regression.sh` now verifies top-level `main --reset-usb-mitigation` parser/dispatch wiring (including root/systemd/writable-root gates) reaches the USB-only reset path and preserves core VFIO artifacts.
+- 2026-03-28 21:03 UTC: Improved USB Ethernet EEE-off interactive picker output in `vfio.sh`:
+  - detected USB Ethernet option indices now use the same colorized numbering style as other USB mitigation pickers when color output is enabled.
+- 2026-03-28 21:03 UTC: Expanded regression coverage for recent USB/reset/completion improvements:
+  - added `regression/reset-usb-mitigation-regression.sh` to verify USB-only reset removes USB mitigation artifacts while preserving core VFIO artifacts,
+  - added `regression/usb-ethernet-eee-regression.sh` to verify EEE-off picker colorized numbering and persisted selected IDs,
+  - strengthened `regression/completion-output-regression.sh` to assert multiline zsh `_arguments` continuation structure.
 - 2026-03-28 20:49 UTC: Added USB Ethernet EEE-off integration to USB mitigation flow in `vfio.sh`:
   - mitigation config now persists `USB_ETHERNET_EEE_OFF` and `USB_ETHERNET_EEE_IDS` in `/etc/vfio-usb-bluetooth-match.conf`,
   - installer flow now supports interactive USB Ethernet ID selection for EEE-off policy,

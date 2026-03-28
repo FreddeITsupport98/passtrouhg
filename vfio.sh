@@ -8311,7 +8311,12 @@ configure_usb_bt_ethernet_eee_interactive() {
   note "Detected USB Ethernet IDs:"
   local i
   for i in "${!eth_ids[@]}"; do
-    say "  [$((i+1))] ${eth_labels[$i]}"
+    local eth_idx_text
+    eth_idx_text="[$((i+1))]"
+    if (( ENABLE_COLOR )); then
+      eth_idx_text="${C_BOLD}${C_GREEN}[$((i+1))]${C_RESET}"
+    fi
+    say "  ${eth_idx_text} ${eth_labels[$i]}"
   done
 
   local in out answer interactive_in_fd

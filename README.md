@@ -27,6 +27,14 @@ The script is designed to be **interactive, defensive and reversible**, so that 
 - Added USB mitigation support for optional USB Ethernet EEE-off targeting (per selected USB NIC VID:PID IDs) with USB-only safeguards.
 - Added `--reset-usb-mitigation` mode to remove only USB mitigation artifacts/config (including USB Ethernet EEE-off settings) without touching core VFIO GPU passthrough setup.
 - Updated CLI/help/completion coverage to include `--reset-usb-mitigation` consistently across fish/bash/zsh completion output paths.
+- Added colorized numbered option output for the USB Ethernet EEE-off picker so EEE selection prompts match the existing USB mitigation visual style.
+- Added focused regression coverage for:
+  - multiline zsh `_arguments` completion structure,
+  - USB-only reset behavior (`--reset-usb-mitigation`) preserving core VFIO artifacts,
+  - USB Ethernet EEE-off colorized option output and persisted ID selection.
+- Extended focused regression coverage for:
+  - USB Ethernet EEE-off picker plain-text fallback output when color is disabled (`ENABLE_COLOR=0`),
+  - top-level `main --reset-usb-mitigation` parser/dispatch path (including safety-gate wiring) in addition to direct helper-path behavior.
 
 ---
 

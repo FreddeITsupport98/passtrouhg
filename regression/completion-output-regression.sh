@@ -38,6 +38,66 @@ assert_contains_text() {
     record_failure "$name"
   fi
 }
+assert_regex_text() {
+  local name="$1" pattern="$2" haystack="$3"
+  if grep -Eq -- "$pattern" <<<"$haystack"; then
+    printf 'PASS: %s\n' "$name"
+  else
+    printf 'FAIL: %s (regex not matched: %s)\n' "$name" "$pattern" >&2
+    record_failure "$name"
+  fi
+}
+assert_zsh_arguments_multiline_structure() {
+  local completion_text="$1"
+  local args_line_num option_block continued_count option_lines_count last_option_line
+
+  args_line_num="$(awk '/^[[:space:]]*_arguments \\$/ { print NR; exit }' <<<"$completion_text")"
+  if [[ -n "$args_line_num" ]]; then
+    printf 'PASS: zsh _arguments starts on dedicated continuation line\n'
+  else
+    printf 'FAIL: zsh _arguments starts on dedicated continuation line (expected line ending with backslash)\n' >&2
+    record_failure "zsh _arguments starts on dedicated continuation line"
+    return
+  fi
+
+  option_block="$(awk -v start="$args_line_num" '
+    NR > start {
+      if ($0 ~ /^}/) { exit }
+      print
+    }
+  ' <<<"$completion_text")"
+  if [[ -n "$option_block" ]]; then
+    printf 'PASS: zsh _arguments multiline option block is present\n'
+  else
+    printf 'FAIL: zsh _arguments multiline option block is present (no option lines found)\n' >&2
+    record_failure "zsh _arguments multiline option block is present"
+    return
+  fi
+
+  option_lines_count="$(awk '/^[[:space:]]+'\''/ { c++ } END { print c+0 }' <<<"$option_block")"
+  if (( option_lines_count >= 5 )); then
+    printf 'PASS: zsh _arguments block keeps multiple option lines\n'
+  else
+    printf 'FAIL: zsh _arguments block keeps multiple option lines (found=%s)\n' "$option_lines_count" >&2
+    record_failure "zsh _arguments block keeps multiple option lines"
+  fi
+
+  continued_count="$(awk '/^[[:space:]]+'\''/ && /\\$/ { c++ } END { print c+0 }' <<<"$option_block")"
+  if (( continued_count >= 3 )); then
+    printf 'PASS: zsh _arguments block keeps continued option lines with trailing backslashes\n'
+  else
+    printf 'FAIL: zsh _arguments block keeps continued option lines with trailing backslashes (found=%s)\n' "$continued_count" >&2
+    record_failure "zsh _arguments block keeps continued option lines with trailing backslashes"
+  fi
+
+  last_option_line="$(awk '/^[[:space:]]+'\''/ { line=$0 } END { print line }' <<<"$option_block")"
+  if [[ "$last_option_line" == *"\\" ]]; then
+    printf 'FAIL: zsh _arguments final option line omits trailing backslash (found trailing backslash)\n' >&2
+    record_failure "zsh _arguments final option line omits trailing backslash"
+  else
+    printf 'PASS: zsh _arguments final option line omits trailing backslash\n'
+  fi
+}
 
 extract_help_long_options() {
   local help_text="$1"
@@ -115,6 +175,8 @@ zsh_out="$(capture_completion_mode --print-zsh-completion)"
 assert_non_empty "zsh completion output is non-empty" "$zsh_out"
 assert_contains_text "zsh completion includes compdef header" "#compdef" "$zsh_out"
 assert_contains_text "zsh completion includes _arguments block" "_arguments \\" "$zsh_out"
+assert_regex_text "zsh completion keeps dedicated _arguments continuation line" "^[[:space:]]*_arguments \\\\$" "$zsh_out"
+assert_zsh_arguments_multiline_structure "$zsh_out"
 assert_contains_text "zsh completion includes boot-vga-policy values" ":policy:(auto strict)" "$zsh_out"
 assert_shell_covers_help_options "zsh" "$zsh_out"
 
