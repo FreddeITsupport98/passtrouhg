@@ -22,6 +22,10 @@ The script is designed to be **interactive, defensive and reversible**, so that 
 > **Important:** This script does *not* create or modify VMs. It only prepares your host so that a hypervisor (libvirt/qemu, etc.) can passthrough the selected PCI devices.
 
 ## Unreleased
+- Improved USB Bluetooth mitigation helper behavior for advanced include-only policy:
+  - generated `vfio-usb-bluetooth.sh` now detaches explicitly selected non-Bluetooth USB interfaces when `MATCH_MODE="include_only"` and matching `INCLUDE_IDS` are configured.
+  - this allows targeted detach of specific unstable USB IDs (for example some dock LAN adapters) while keeping default Bluetooth-only behavior unchanged in `MATCH_MODE="auto"`.
+  - helper re-enable path now uses generic USB driver reprobe (`/sys/bus/usb/drivers_probe`) with fallback bind behavior for broader interface-driver compatibility.
 - Fixed persisted AUTO X11 pinning default formatting:
   - `write_conf()` now emits `VFIO_GRAPHICS_AUTO_X11_PINNING="1"` as a plain quoted numeric value, not an escaped-quote literal.
   - avoids false fallback to disabled behavior when daemon reads the setting from config.

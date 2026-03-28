@@ -1,5 +1,9 @@
 # Changelog
 ## Unreleased
+- Improved USB Bluetooth mitigation helper behavior in `vfio.sh` for advanced include-only policy:
+  - generated `vfio-usb-bluetooth.sh` now detaches explicitly selected non-Bluetooth USB interfaces when `MATCH_MODE=\"include_only\"` and matching `INCLUDE_IDS` are configured.
+  - default Bluetooth-only behavior in `MATCH_MODE=\"auto\"` remains unchanged.
+  - helper `--enable` path now uses generic USB driver reprobe (`/sys/bus/usb/drivers_probe`) with fallback bind behavior for broader driver compatibility.
 - Fixed persisted AUTO X11 pinning default in `vfio.sh`:
   - `write_conf()` now emits `VFIO_GRAPHICS_AUTO_X11_PINNING=\"1\"` as a plain quoted numeric value (not escaped-quote literal text).
   - prevents daemon config parsing from falling back to disabled behavior for AUTO X11 pinning.

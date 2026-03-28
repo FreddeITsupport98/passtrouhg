@@ -1351,7 +1351,9 @@ Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--boot-vga-policy auto|str
                    Install/reinstall only the VFIO graphics protocol daemon + systemd unit.
                    Useful for rolling out daemon/watchdog logic updates without re-running the full wizard.
   --install-usb-bt-mitigation
-                   Install ONLY the optional USB Bluetooth reset-spam mitigation (systemd+udev). This detaches USB Bluetooth adapters from btusb on the host but keeps them available for VM passthrough.
+                   Install ONLY the optional USB Bluetooth reset-spam mitigation (systemd+udev).
+                   Default behavior detaches USB Bluetooth adapters from host drivers while keeping devices VM-pass-through eligible.
+                   Advanced behavior (MATCH_MODE=include_only with INCLUDE_IDS) can also detach explicitly selected non-Bluetooth USB IDs.
   --print-fish-completion
                    Print fish completion script to stdout (no install required).
                    Example: source ($SCRIPT_NAME --print-fish-completion)
@@ -8746,17 +8748,17 @@ intf_disable() {
   local intf="$1"
   local name drv
   name="$(basename "$intf")"
-
+  # Prevent automatic rebind while this mitigation is active.
   # Prevent btusb from binding again.
   if [[ -w "$intf/driver_override" ]]; then
     echo "none" >"$intf/driver_override" 2>/dev/null || true
   fi
-
+  # If currently bound, unbind from the current driver.
   # If currently bound, unbind from btusb.
   if [[ -L "$intf/driver" ]]; then
     drv="$(basename "$(readlink -f "$intf/driver" 2>/dev/null || true)")"
-    if [[ "$drv" == "btusb" && -w /sys/bus/usb/drivers/btusb/unbind ]]; then
-      echo "$name" >/sys/bus/usb/drivers/btusb/unbind 2>/dev/null || true
+    if [[ -n "$drv" && -w "/sys/bus/usb/drivers/$drv/unbind" ]]; then
+      echo "$name" >"/sys/bus/usb/drivers/$drv/unbind" 2>/dev/null || true
     fi
   fi
 }
@@ -8771,8 +8773,11 @@ intf_enable() {
     echo "" >"$intf/driver_override" 2>/dev/null || true
   fi
 
-  # Best-effort rebind.
-  if [[ -w /sys/bus/usb/drivers/btusb/bind ]]; then
+  # Best-effort re-probe through generic USB driver matching.
+  if [[ -w /sys/bus/usb/drivers_probe ]]; then
+    echo "$name" >/sys/bus/usb/drivers_probe 2>/dev/null || true
+  elif [[ -w /sys/bus/usb/drivers/btusb/bind ]]; then
+    # Fallback for systems where drivers_probe is unavailable.
     echo "$name" >/sys/bus/usb/drivers/btusb/bind 2>/dev/null || true
   fi
 }
@@ -8781,9 +8786,15 @@ changed=0
 for dev in /sys/bus/usb/devices/*; do
   [[ -f "$dev/idVendor" && -f "$dev/idProduct" ]] || continue
   if device_matches_policy "$dev"; then
+    is_bt_target=0
+    target_scope="include-only"
     vid="$(normalize_id_component "$(cat "$dev/idVendor" 2>/dev/null || echo '?')")"
     pid="$(normalize_id_component "$(cat "$dev/idProduct" 2>/dev/null || echo '?')")"
     if usb_device_is_bluetooth "$dev"; then
+      is_bt_target=1
+      target_scope="bluetooth"
+    fi
+    if (( is_bt_target )) || [[ "$MATCH_MODE" == "include_only" ]]; then
       shopt -s nullglob
       for intf in "$dev":*; do
         [[ -d "$intf" ]] || continue
@@ -8794,7 +8805,7 @@ for dev in /sys/bus/usb/devices/*; do
         fi
       done
       shopt -u nullglob
-      echo "vfio-usb-bluetooth: ${MODE}d $(basename "$dev") (${vid}:${pid}) mode=${MATCH_MODE}"
+      echo "vfio-usb-bluetooth: ${MODE}d $(basename "$dev") (${vid}:${pid}) mode=${MATCH_MODE} scope=${target_scope}"
       changed=1
     fi
   fi
@@ -10875,6 +10886,8 @@ apply_configuration() {
   note
   note "What this installs: systemd+udev helper that detaches USB Bluetooth adapters from the host btusb driver (unbind + driver_override=none)."
   note "Result: host-side USB Bluetooth is effectively disabled (no reset-spam), but the USB device stays enumerated so it can be passed through to a VM."
+  note "Advanced: if MATCH_MODE=include_only and INCLUDE_IDS is set, the helper also detaches those exact selected USB IDs (for example a flaky dock LAN adapter)."
+  note "Use include_only carefully; selecting storage-class USB devices as VM-eligible detach targets is risky."
   note "Re-enable later: $USB_BT_SCRIPT --enable (or remove everything via --reset)."
   if prompt_yn "Install and enable automatic USB Bluetooth host detach (systemd+udev)?" N "USB Bluetooth"; then
     install_usb_bluetooth_disable

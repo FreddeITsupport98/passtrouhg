@@ -491,8 +491,13 @@ if bash -n "$case13_helper" >/dev/null 2>&1; then
 else
   case13_helper_syntax="bad"
 fi
+case13_helper_text="$(cat "$case13_helper")"
 assert_eq "case13 generated helper script file exists" "yes" "$case13_helper_present"
 assert_eq "case13 generated helper script passes bash syntax check" "ok" "$case13_helper_syntax"
+assert_contains_text "case13 helper uses generic driver unbind path" "/sys/bus/usb/drivers/\$drv/unbind" "$case13_helper_text"
+assert_contains_text "case13 helper uses generic USB drivers_probe rebind path" "/sys/bus/usb/drivers_probe" "$case13_helper_text"
+assert_contains_text "case13 helper keeps include_only detach gate" "[[ \"\$MATCH_MODE\" == \"include_only\" ]]" "$case13_helper_text"
+assert_contains_text "case13 helper emits scope marker for matched devices" "scope=\${target_scope}" "$case13_helper_text"
 case13_helper_write_count_after_first="$(grep -Fc -- "$case13_helper" "$case13_write_log" || true)"
 case13_unit_write_count_after_first="$(grep -Fc -- "$case13_unit" "$case13_write_log" || true)"
 case13_rule_write_count_after_first="$(grep -Fc -- "$case13_rule" "$case13_write_log" || true)"
