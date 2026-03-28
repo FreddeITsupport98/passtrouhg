@@ -272,9 +272,9 @@ The script supports several modes controlled by flags. By default, without any f
   - **Destructive clean-up** of everything this script manages.
   - Requires confirmation by typing a phrase (`RESET VFIO`).
   - Performs:
-  -    - Disables and stops `vfio-bind-selected-gpu.service` and, if installed, the VFIO boot-log dumper service.
-  -    - Disables and removes the optional **USB Bluetooth disable** service/rules if they were installed.
-  -    - Removes its systemd unit, bind script, audio script, config, vfio modules‑load entry, optional blacklist, and optional boot-log helper.
+    - Disables and stops `vfio-bind-selected-gpu.service` and, if installed, the VFIO boot-log dumper service.
+    - Disables and removes the optional **USB Bluetooth disable** service/rules if they were installed.
+    - Removes its systemd unit, bind script, audio script, config, vfio modules‑load entry, optional blacklist, and optional boot-log helper.
     - Optionally removes user systemd audio units under `/home/*`.
     - Optionally removes VFIO/IOMMU and related debug kernel parameters from:
       - `/etc/default/grub` on classic GRUB systems, with:
@@ -303,14 +303,19 @@ The script supports several modes controlled by flags. By default, without any f
 
 - `--install-usb-bt-mitigation`
   - Installs only the optional USB Bluetooth mitigation (`vfio-usb-bluetooth` helper + systemd + udev + match-policy config).
-  - During install, the wizard shows a numbered USB picker using VM-eligible-first semantics (selected IDs are detach-eligible; unselected IDs become `EXCLUDE_IDS` host-bound IDs).
-  - In Bluetooth-only policy mode, the picker can start in a Bluetooth-focused list and offers an explicit prompt to show the full USB list before selection.
-  - While entering selections, users can type `full` or `focus` to switch between full USB and Bluetooth-focused views without leaving the picker loop.
-  - Reruns are idempotent for USB selection: when the chosen VM-eligible set resolves to the same `EXCLUDE_IDS`, config writes are skipped.
-  - Reruns are also content-aware for mitigation artifacts: unchanged helper/unit/udev generated content is not rewritten.
-  - Existing mitigation service setup is not immediately re-run only when both selection and generated artifact content are unchanged.
-  - When a preconfigured non-default exclusions/policy config already exists, installer reruns now ask whether to reconfigure it; declining keeps existing config without reopening the picker.
-  - If storage-marked entries are not excluded, the picker adds a final danger confirmation step before allowing install flow to continue.
+  - Picker flow (VM-eligible-first):
+    - Selected IDs are detach-eligible for VM usage.
+    - Unselected IDs are written to `EXCLUDE_IDS` and kept host-bound.
+  - View modes:
+    - Bluetooth-only policy can start in a Bluetooth-focused view.
+    - You can switch views live by typing `full` or `focus` in the picker.
+  - Rerun behavior:
+    - Selection is idempotent: unchanged effective `EXCLUDE_IDS` skips config writes.
+    - Generated helper/unit/udev files are content-aware and are not rewritten when unchanged.
+    - Immediate service re-run is skipped only when both selection and generated content are unchanged.
+    - If a non-default policy already exists, reruns ask whether to reconfigure; declining keeps existing config and skips the picker.
+  - Safety interlock:
+    - If storage-marked entries are not excluded, the picker requires an explicit danger confirmation before continuing.
 
 - `--print-fish-completion`
   - Prints fish completions to stdout without installing files.

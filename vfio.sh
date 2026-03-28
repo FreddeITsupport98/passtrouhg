@@ -7966,21 +7966,17 @@ EOF
   say "Installed udev isolation rules to prevent the host UI from grabbing the guest GPU (and HDMI audio, if selected)."
 }
 usb_bt_mitigation_explain() {
-  note "This optional feature targets a specific (but nasty) class of stability problems: USB Bluetooth adapters that cause repeated kernel timeouts and USB reset storms."
-  note "These storms can make other USB devices randomly glitch/disconnect and can interfere with VFIO/passthrough stability."
+  note "This optional feature targets USB Bluetooth timeout/reset storms that can destabilize other USB devices and hurt passthrough stability."
   note
-  note "Why this exists (problem statement):"
-  note "Some USB Bluetooth adapters (or Bluetooth functions inside docks) behave poorly under Linux when driven by the host btusb stack."
-  note "The failure pattern often looks like this in kernel logs:"
+  note "Typical kernel log pattern:"
   note "  - Bluetooth: hci0: command ... tx timeout"
   note "  - Bluetooth: hci0: Resetting usb device"
   note "  - usb X-Y: reset ... USB device"
   note
-  note "This is not just log spam: it can be a real reset loop where the USB host controller repeatedly resets that device/path trying to recover."
-  note "If this repeats every few seconds, it can destabilize the entire USB topology behind the same controller/hub/dock, causing symptoms like:"
-  note "  - USB storage intermittently failing / unmounting"
-  note "  - devices stopping working until replug"
-  note "  - general USB flakiness during passthrough testing"
+  note "Why this matters:"
+  note "  - repeated resets are often a real recovery loop, not harmless log noise"
+  note "  - instability can spread across the same USB hub/controller path"
+  note "  - symptoms may include random disconnects, replug-required devices, and storage glitches"
 }
 usb_sysfs_device_is_bluetooth() {
   # Return 0 if the sysfs USB device directory appears to expose Bluetooth
@@ -8961,6 +8957,7 @@ EOF
   fi
 
   if (( exclusions_preconfigured )) && [[ "$had_unit" -eq 1 && "$had_match_conf" -eq 1 ]]; then
+    say
     note "Detected existing USB Bluetooth mitigation configuration in: $USB_BT_MATCH_CONF"
     if prompt_yn "Existing USB Bluetooth exclusions/policy detected. Reconfigure now?" N "USB Bluetooth exclusions"; then
       configure_usb_bt_policy_mode_interactive "$USB_BT_MATCH_CONF"
@@ -8997,12 +8994,14 @@ EOF
   fi
 
   run systemctl daemon-reload
+  say
   if (( should_start_now )); then
     run systemctl enable --now vfio-disable-usb-bluetooth.service
   else
     run systemctl enable vfio-disable-usb-bluetooth.service
     note "USB Bluetooth settings unchanged; skipping immediate service run."
   fi
+  say
 
   say "Installed USB Bluetooth disable helper: $USB_BT_SCRIPT"
   say "Installed systemd unit: $USB_BT_SYSTEMD_UNIT"
@@ -10994,15 +10993,24 @@ apply_configuration() {
 
   say
   hdr "USB Bluetooth (optional)"
-  note "Optional because most systems do NOT need this. Only enable it if you have a USB Bluetooth adapter (dongle/dock) that causes instability."
+  note "Optional feature: most systems do NOT need this."
+  note "Enable only when a USB Bluetooth adapter (dongle/dock) is causing timeout/reset instability."
   usb_bt_mitigation_explain
   note
-  note "What this installs: systemd+udev helper that detaches USB Bluetooth adapters from the host btusb driver (unbind + driver_override=none)."
-  note "Result: host-side USB Bluetooth is effectively disabled (no reset-spam), but the USB device stays enumerated so it can be passed through to a VM."
-  note "Advanced: if MATCH_MODE=include_only and INCLUDE_IDS is set, the helper also detaches those exact selected USB IDs (for example a flaky dock LAN adapter)."
-  note "Safety: this helper only operates on /sys/bus/usb/devices interfaces and USB drivers; it does NOT unbind motherboard PCI ethernet/Wi-Fi devices."
-  note "Use include_only carefully; selecting storage-class USB devices as VM-eligible detach targets is risky."
-  note "Re-enable later: $USB_BT_SCRIPT --enable (or remove everything via --reset)."
+  note "Install scope:"
+  note "  - systemd + udev helper to detach USB Bluetooth interfaces from host btusb"
+  note "  - uses unbind + driver_override=none flow"
+  note "Expected result:"
+  note "  - host Bluetooth side is disabled (reset-spam reduced)"
+  note "  - USB device still enumerates and remains VM-pass-through eligible"
+  note "Advanced mode:"
+  note "  - MATCH_MODE=include_only with INCLUDE_IDS detaches only explicitly selected USB IDs"
+  note "  - useful for targeted unstable devices (for example a flaky dock LAN adapter)"
+  note "Safety guardrails:"
+  note "  - operates only on /sys/bus/usb/devices interfaces + USB drivers"
+  note "  - never unbinds motherboard PCI ethernet/Wi-Fi devices"
+  note "  - selecting storage-class devices as VM-eligible detach targets is risky"
+  note "Recovery: run $USB_BT_SCRIPT --enable, or remove mitigation via --reset."
   if prompt_yn "Install and enable automatic USB Bluetooth host detach (systemd+udev)?" N "USB Bluetooth"; then
     install_usb_bluetooth_disable
   else
@@ -11367,11 +11375,13 @@ main() {
     hdr "USB Bluetooth reset-spam mitigation (standalone install)"
     usb_bt_mitigation_explain
     say
-    note "This will install:"
+    note "This standalone mode installs only USB mitigation artifacts:"
     note "  - $USB_BT_SCRIPT"
     note "  - $USB_BT_SYSTEMD_UNIT"
     note "  - $USB_BT_UDEV_RULE"
     note "  - $USB_BT_MATCH_CONF"
+    note "Safety scope: USB interface drivers only (never motherboard PCI NIC/Wi-Fi)."
+    say
     if prompt_yn "Install USB Bluetooth host-detach mitigation now?" Y "USB Bluetooth"; then
       install_usb_bluetooth_disable
       say "Done."
