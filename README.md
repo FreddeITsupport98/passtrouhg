@@ -27,6 +27,7 @@ The script is designed to be **interactive, defensive and reversible**, so that 
 - Added USB mitigation support for optional USB Ethernet EEE-off targeting (per selected USB NIC VID:PID IDs) with USB-only safeguards.
 - Added `--reset-usb-mitigation` mode to remove only USB mitigation artifacts/config (including USB Ethernet EEE-off settings) without touching core VFIO GPU passthrough setup.
 - Updated CLI/help/completion coverage to include `--reset-usb-mitigation` consistently across fish/bash/zsh completion output paths.
+- Added `--remove-bootlog` as an additive convenience alias of `--disable-bootlog` so install/remove bootlog flows read naturally (`--install-bootlog` vs `--remove-bootlog`).
 - Added colorized numbered option output for the USB Ethernet EEE-off picker so EEE selection prompts match the existing USB mitigation visual style.
 - Added focused regression coverage for:
   - multiline zsh `_arguments` completion structure,
@@ -160,7 +161,7 @@ Use `sudo` so that the script can write to `/etc`, `/usr/local`, systemd directo
 The script supports several modes controlled by flags. By default, without any flag, it runs the **interactive installer**.
 
 ```text
-./vfio.sh [--debug] [--dry-run] [--boot-vga-policy auto|strict] [--verify] [--detect] [--sync-bls-only] [--debug-cmdline-tokens] [--entry pattern] [--verify-bls-sync] [--verify-bls-nosnapper] [--create-fallback-entry] [--print-effective-config] [--json] [--self-test] [--health-check] [--health-check-previous] [--health-check-all] [--usb-health-check] [--reset] [--reset-usb-mitigation] [--disable-bootlog] [--boot-remove] [--install-bootlog] [--install-graphics-daemon] [--install-usb-bt-mitigation] [--print-fish-completion] [--print-bash-completion] [--print-zsh-completion]
+./vfio.sh [--debug] [--dry-run] [--boot-vga-policy auto|strict] [--verify] [--detect] [--sync-bls-only] [--debug-cmdline-tokens] [--entry pattern] [--verify-bls-sync] [--verify-bls-nosnapper] [--create-fallback-entry] [--print-effective-config] [--json] [--self-test] [--health-check] [--health-check-previous] [--health-check-all] [--usb-health-check] [--reset] [--reset-usb-mitigation] [--disable-bootlog] [--boot-remove] [--remove-bootlog] [--install-bootlog] [--install-graphics-daemon] [--install-usb-bt-mitigation] [--print-fish-completion] [--print-bash-completion] [--print-zsh-completion]
 ```
 
 ### Common flags
@@ -314,6 +315,9 @@ The script supports several modes controlled by flags. By default, without any f
 - `--boot-remove`
   - Alias of `--disable-bootlog`.
   - Same behavior, provided as an additive convenience flag name.
+- `--remove-bootlog`
+  - Alias of `--disable-bootlog`.
+  - Same behavior, provided as an additive convenience flag name that mirrors `--install-bootlog`.
 - `--install-bootlog`
   - Installs/reinstalls only the optional `vfio-dump-boot-log.service` helper + unit.
   - Useful after snapshot rollbacks where `/etc` systemd state may differ from user-home helper state.

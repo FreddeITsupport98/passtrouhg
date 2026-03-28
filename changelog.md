@@ -1,5 +1,9 @@
 # Changelog
 ## Unreleased
+- 2026-03-28 21:13 UTC: Added additive bootlog removal alias support:
+  - `vfio.sh` now accepts `--remove-bootlog` as an alias of `--disable-bootlog`,
+  - updated usage/help and fish/bash/zsh completion generators to include the new alias,
+  - updated README command-mode docs and Unreleased notes to document the install/remove bootlog pairing (`--install-bootlog` / `--remove-bootlog`).
 - 2026-03-28 21:07 UTC: Expanded targeted regression depth for recent USB mitigation changes:
   - `regression/usb-ethernet-eee-regression.sh` now verifies no-color fallback output (`ENABLE_COLOR=0`) keeps plain numbered EEE picker indices while still persisting selected USB Ethernet IDs,
   - `regression/reset-usb-mitigation-regression.sh` now verifies top-level `main --reset-usb-mitigation` parser/dispatch wiring (including root/systemd/writable-root gates) reaches the USB-only reset path and preserves core VFIO artifacts.

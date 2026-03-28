@@ -47,7 +47,7 @@ DRY_RUN=0
 JSON_OUTPUT=0
 DEBUG_CMDLINE_TOKENS=0
 DEBUG_CMDLINE_TOKENS_ENTRY_FILTER=""
-MODE="install"   # install | verify | detect | sync-bls-only | debug-cmdline-tokens | verify-bls-sync | verify-bls-nosnapper | create-fallback-entry | self-test | health-check | reset | reset-usb-mitigation | install-bootlog | install-graphics-daemon | completion printers
+MODE="install"   # install | verify | detect | sync-bls-only | debug-cmdline-tokens | verify-bls-sync | verify-bls-nosnapper | create-fallback-entry | self-test | health-check | reset | reset-usb-mitigation | disable-bootlog | install-bootlog | install-graphics-daemon | completion printers
 BOOT_VGA_POLICY_OVERRIDE=""   # AUTO | STRICT (empty = use script default)
 GRAPHICS_PROTOCOL_OVERRIDE="" # AUTO | X11 | WAYLAND (empty = auto-detect)
 INSTALL_GRAPHICS_DAEMON=1     # 1=install graphics protocol daemon, 0=skip
@@ -622,6 +622,7 @@ complete -c $cmd -l reset -d 'Remove VFIO setup installed by this script'
 complete -c $cmd -l reset-usb-mitigation -d 'Remove only USB mitigation artifacts'
 complete -c $cmd -l disable-bootlog -d 'Disable/remove optional VFIO boot-log dumper'
 complete -c $cmd -l boot-remove -d 'Alias of --disable-bootlog'
+complete -c $cmd -l remove-bootlog -d 'Alias of --disable-bootlog'
 complete -c $cmd -l install-bootlog -d 'Install/reinstall only optional VFIO boot-log dumper'
 complete -c $cmd -l install-graphics-daemon -d 'Install/reinstall only VFIO graphics protocol daemon'
 complete -c $cmd -l install-usb-bt-mitigation -d 'Install only optional USB Bluetooth mitigation'
@@ -640,7 +641,7 @@ _vfio_sh_complete() {
   COMPREPLY=()
   cur="\${COMP_WORDS[COMP_CWORD]}"
   prev="\${COMP_WORDS[COMP_CWORD-1]}"
-  opts="--help -h --debug --dry-run --no-tui --boot-vga-policy --graphics-protocol --graphics-daemon-interval --no-graphics-daemon --verify --detect --sync-bls-only --debug-cmdline-tokens --entry --verify-bls-sync --verify-bls-nosnapper --create-fallback-entry --print-effective-config --json --self-test --health-check --health-check-previous --health-check-all --usb-health-check --reset --reset-usb-mitigation --disable-bootlog --boot-remove --install-bootlog --install-graphics-daemon --install-usb-bt-mitigation --print-fish-completion --print-bash-completion --print-zsh-completion"
+  opts="--help -h --debug --dry-run --no-tui --boot-vga-policy --graphics-protocol --graphics-daemon-interval --no-graphics-daemon --verify --detect --sync-bls-only --debug-cmdline-tokens --entry --verify-bls-sync --verify-bls-nosnapper --create-fallback-entry --print-effective-config --json --self-test --health-check --health-check-previous --health-check-all --usb-health-check --reset --reset-usb-mitigation --disable-bootlog --boot-remove --remove-bootlog --install-bootlog --install-graphics-daemon --install-usb-bt-mitigation --print-fish-completion --print-bash-completion --print-zsh-completion"
 
   if [[ "\$prev" == "--boot-vga-policy" ]]; then
     COMPREPLY=(\$(compgen -W "auto strict" -- "\$cur"))
@@ -700,6 +701,7 @@ _vfio_sh_complete() {
     '--reset-usb-mitigation[Remove only USB mitigation artifacts]' \\
     '--disable-bootlog[Disable/remove optional VFIO boot-log dumper]' \\
     '--boot-remove[Alias of --disable-bootlog]' \\
+    '--remove-bootlog[Alias of --disable-bootlog]' \
     '--install-bootlog[Install/reinstall only optional VFIO boot-log dumper]' \\
     '--install-graphics-daemon[Install/reinstall only VFIO graphics protocol daemon]' \\
     '--install-usb-bt-mitigation[Install only optional USB Bluetooth mitigation]' \\
@@ -1300,7 +1302,7 @@ prompt_yn() {
 
 usage() {
   cat <<EOF
-Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--boot-vga-policy auto|strict] [--graphics-protocol auto|x11|wayland] [--graphics-daemon-interval seconds] [--no-graphics-daemon] [--verify] [--detect] [--sync-bls-only] [--debug-cmdline-tokens] [--entry pattern] [--verify-bls-sync] [--verify-bls-nosnapper] [--create-fallback-entry] [--print-effective-config] [--json] [--self-test] [--health-check] [--health-check-previous] [--health-check-all] [--usb-health-check] [--reset] [--reset-usb-mitigation] [--disable-bootlog] [--boot-remove] [--install-bootlog] [--install-graphics-daemon] [--install-usb-bt-mitigation] [--print-fish-completion] [--print-bash-completion] [--print-zsh-completion]
+Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--boot-vga-policy auto|strict] [--graphics-protocol auto|x11|wayland] [--graphics-daemon-interval seconds] [--no-graphics-daemon] [--verify] [--detect] [--sync-bls-only] [--debug-cmdline-tokens] [--entry pattern] [--verify-bls-sync] [--verify-bls-nosnapper] [--create-fallback-entry] [--print-effective-config] [--json] [--self-test] [--health-check] [--health-check-previous] [--health-check-all] [--usb-health-check] [--reset] [--reset-usb-mitigation] [--disable-bootlog] [--boot-remove] [--remove-bootlog] [--install-bootlog] [--install-graphics-daemon] [--install-usb-bt-mitigation] [--print-fish-completion] [--print-bash-completion] [--print-zsh-completion]
 
   --debug           Enable verbose debug logging (and bash xtrace).
   --dry-run         Show actions but do not write files / run system-changing commands.
@@ -1350,6 +1352,7 @@ Usage: $SCRIPT_NAME [--debug] [--dry-run] [--no-tui] [--boot-vga-policy auto|str
                    including USB Ethernet EEE-off mitigation config, while keeping core VFIO GPU setup.
   --disable-bootlog Disable only the optional VFIO boot log dumper service/unit, keeping the rest of the VFIO setup intact.
   --boot-remove     Alias of --disable-bootlog.
+  --remove-bootlog  Alias of --disable-bootlog.
   --install-bootlog Install/reinstall only the optional VFIO boot log dumper helper + systemd unit.
                    Useful after snapshot rollbacks where /etc systemd state differs from user-home helper state.
   --install-graphics-daemon
@@ -1511,6 +1514,9 @@ parse_args() {
         MODE="disable-bootlog"
         ;;
       --boot-remove)
+        MODE="disable-bootlog"
+        ;;
+      --remove-bootlog)
         MODE="disable-bootlog"
         ;;
       --install-bootlog)
