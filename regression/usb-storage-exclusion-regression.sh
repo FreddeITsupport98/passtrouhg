@@ -708,6 +708,30 @@ assert_contains_text "case17 hard-block numbered picker prints target list headi
 assert_contains_text "case17 hard-block numbered picker shows first listed target line" "[1] 1-1 aaaa:0001 SanDisk Portable SSD [danger: Storage]" "$case17_stdout_text"
 assert_contains_text "case17 hard-block numbered picker shows bluetooth hint for listed target" "[2] 1-2 bbbb:0002 Logitech USB Receiver [hint: Bluetooth detected] [keep-bound: Ethernet]" "$case17_stdout_text"
 assert_contains_text "case17 hard-block numbered picker confirms selected ID" "Configured aggressive USB hard-block IDs: bbbb:0002" "$case17_stdout_text"
+# Case 18: Effective target summary should never show [HARD-BLOCK] on host-bound devices.
+case18_conf="$tmp_dir/case18-hard-block-summary.conf"
+case18_stdout="$tmp_dir/case18-hard-block-summary-stdout.txt"
+case18_stderr="$tmp_dir/case18-hard-block-summary-stderr.txt"
+cat >"$case18_conf" <<'EOF'
+MATCH_MODE="include_only"
+INCLUDE_IDS="bbbb:0002"
+EXCLUDE_IDS="aaaa:0001"
+USB_BT_STOP_BLUETOOTH_SERVICE="1"
+USB_BT_HARD_BLOCK="1"
+USB_BT_HARD_BLOCK_IDS=""
+USB_ETHERNET_EEE_OFF="0"
+USB_ETHERNET_EEE_IDS=""
+EOF
+USB_BT_MATCH_CONF="$case18_conf"
+VFIO_USB_SYSFS_GLOB="$usb_fake_root/*"
+BT_USB_DEVICE_NAME="1-2"
+ENABLE_COLOR=0
+print_usb_bt_mitigation_target_summary >"$case18_stdout" 2>"$case18_stderr"
+case18_stdout_text="$(cat "$case18_stdout")"
+assert_contains_text "case18 summary keeps host-bound storage untagged by hard-block" "[HOST-BOUND] 1-1 aaaa:0001 SanDisk Portable SSD" "$case18_stdout_text"
+assert_not_contains_text "case18 summary does not emit host-bound hard-block tag" "[HOST-BOUND][HARD-BLOCK]" "$case18_stdout_text"
+assert_contains_text "case18 summary marks include-only target with mitigate+hard-block tags" "[MITIGATE][HARD-BLOCK] 1-2 bbbb:0002 Logitech USB Receiver" "$case18_stdout_text"
+assert_contains_text "case18 summary totals count only mitigation-scoped hard-block targets" "Summary totals: scanned=2 mitigate=1 hard-block=1 eee-off=0" "$case18_stdout_text"
 
 if (( fail != 0 )); then
   printf '\nFAIL SUMMARY (%d)\n' "${#FAILED_ASSERTIONS[@]}" >&2

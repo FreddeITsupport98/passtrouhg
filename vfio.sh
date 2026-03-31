@@ -8968,16 +8968,16 @@ print_usb_bt_mitigation_target_summary() {
     if usb_bt_device_matches_policy_from_conf "$dev" "$match_mode" "$include_ids" "$exclude_ids"; then
       tags="[MITIGATE]"
       matched=$((matched + 1))
+      if usb_bt_device_matches_hard_block_scope_from_conf "$dev" "$hard_block" "$hard_block_ids"; then
+        tags="${tags}[HARD-BLOCK]"
+        hard_matched=$((hard_matched + 1))
+      fi
+      if usb_bt_device_matches_eee_scope_from_conf "$dev" "$eee_off" "$eee_ids"; then
+        tags="${tags}[EEE-OFF]"
+        eee_matched=$((eee_matched + 1))
+      fi
     else
       tags="[HOST-BOUND]"
-    fi
-    if usb_bt_device_matches_hard_block_scope_from_conf "$dev" "$hard_block" "$hard_block_ids"; then
-      tags="${tags}[HARD-BLOCK]"
-      hard_matched=$((hard_matched + 1))
-    fi
-    if usb_bt_device_matches_eee_scope_from_conf "$dev" "$eee_off" "$eee_ids"; then
-      tags="${tags}[EEE-OFF]"
-      eee_matched=$((eee_matched + 1))
     fi
     if [[ -n "$desc" ]]; then
       note "  - ${tags} ${name} ${vid}:${pid} ${desc}"
