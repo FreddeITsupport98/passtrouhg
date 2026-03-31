@@ -590,13 +590,12 @@ configure_usb_bt_hard_block_interactive >"$case14_stdout" 2>"$case14_stderr"
 case14_hard_block="$(awk -F= '/^USB_BT_HARD_BLOCK=/{gsub(/"/,"",$2); print $2; exit}' "$case14_conf")"
 case14_hard_block_ids="$(awk -F= '/^USB_BT_HARD_BLOCK_IDS=/{gsub(/"/,"",$2); print $2; exit}' "$case14_conf")"
 case14_stdout_text="$(cat "$case14_stdout")"
-case14_stderr_text="$(cat "$case14_stderr")"
 assert_eq "case14 hard-block interactive enables hard-block flag" "1" "$case14_hard_block"
 assert_eq "case14 hard-block interactive persists normalized scoped IDs" "aaaa:0001,bbbb:*" "$case14_hard_block_ids"
 assert_eq "case14 hard-block interactive marks changed state" "1" "${USB_BT_HARD_BLOCK_CHANGED:-}"
 assert_eq "case14 hard-block interactive uses one yes/no prompt" "1" "$prompt_yn_calls"
 assert_contains_text "case14 hard-block interactive prints configured scope summary" "Configured aggressive USB hard-block IDs: aaaa:0001,bbbb:*" "$case14_stdout_text"
-assert_contains_text "case14 hard-block interactive reports invalid token skip" "Ignoring invalid USB ID pattern: invalid-token" "$case14_stderr_text"
+assert_contains_text "case14 hard-block interactive reports invalid token skip" "Ignoring invalid token: invalid-token" "$case14_stdout_text"
 
 # Case 15: Installer summary should reflect non-default bluetooth-service/hard-block policy values.
 case15_root="$tmp_dir/case15-installer-summary"
@@ -669,6 +668,46 @@ assert_eq "case16 service-guard interactive disables bluetooth.service integrati
 assert_eq "case16 service-guard interactive marks changed state" "1" "${USB_BT_SERVICE_GUARD_CHANGED:-}"
 assert_eq "case16 service-guard interactive uses one yes/no prompt" "1" "$prompt_yn_calls"
 assert_contains_text "case16 service-guard interactive prints disabled summary" "Configured bluetooth.service stop/start integration: <disabled>" "$case16_stdout_text"
+
+# Case 17: Hard-block picker lists mitigation targets and supports numbered selection like other USB flows.
+case17_conf="$tmp_dir/case17-hard-block-numbered.conf"
+case17_input="$tmp_dir/case17-hard-block-numbered-input.txt"
+case17_out="$tmp_dir/case17-hard-block-numbered-prompt.txt"
+case17_stdout="$tmp_dir/case17-hard-block-numbered-stdout.txt"
+case17_stderr="$tmp_dir/case17-hard-block-numbered-stderr.txt"
+cat >"$case17_conf" <<'EOF'
+MATCH_MODE="include_only"
+INCLUDE_IDS="aaaa:0001,bbbb:0002"
+EXCLUDE_IDS=""
+USB_BT_STOP_BLUETOOTH_SERVICE="1"
+USB_BT_HARD_BLOCK="0"
+USB_BT_HARD_BLOCK_IDS=""
+USB_ETHERNET_EEE_OFF="0"
+USB_ETHERNET_EEE_IDS=""
+EOF
+cat >"$case17_input" <<'EOF'
+2
+EOF
+USB_BT_MATCH_CONF="$case17_conf"
+VFIO_USB_SYSFS_GLOB="$usb_fake_root/*"
+VFIO_INTERACTIVE_IN="$case17_input"
+VFIO_INTERACTIVE_OUT="$case17_out"
+BT_USB_DEVICE_NAME="1-2"
+prompt_yn_calls=0
+confirm_phrase_calls=0
+PROMPT_RESPONSES=(0)
+CONFIRM_RESPONSES=()
+configure_usb_bt_hard_block_interactive >"$case17_stdout" 2>"$case17_stderr"
+case17_hard_block="$(awk -F= '/^USB_BT_HARD_BLOCK=/{gsub(/"/,"",$2); print $2; exit}' "$case17_conf")"
+case17_hard_block_ids="$(awk -F= '/^USB_BT_HARD_BLOCK_IDS=/{gsub(/"/,"",$2); print $2; exit}' "$case17_conf")"
+case17_stdout_text="$(cat "$case17_stdout")"
+assert_eq "case17 hard-block numbered picker enables hard-block flag" "1" "$case17_hard_block"
+assert_eq "case17 hard-block numbered picker persists selected listed ID" "bbbb:0002" "$case17_hard_block_ids"
+assert_eq "case17 hard-block numbered picker uses one yes/no prompt" "1" "$prompt_yn_calls"
+assert_contains_text "case17 hard-block numbered picker prints target list heading" "Detected mitigation-eligible USB targets under current policy:" "$case17_stdout_text"
+assert_contains_text "case17 hard-block numbered picker shows first listed target line" "[1] 1-1 aaaa:0001 SanDisk Portable SSD [danger: Storage]" "$case17_stdout_text"
+assert_contains_text "case17 hard-block numbered picker shows bluetooth hint for listed target" "[2] 1-2 bbbb:0002 Logitech USB Receiver [hint: Bluetooth detected] [keep-bound: Ethernet]" "$case17_stdout_text"
+assert_contains_text "case17 hard-block numbered picker confirms selected ID" "Configured aggressive USB hard-block IDs: bbbb:0002" "$case17_stdout_text"
 
 if (( fail != 0 )); then
   printf '\nFAIL SUMMARY (%d)\n' "${#FAILED_ASSERTIONS[@]}" >&2

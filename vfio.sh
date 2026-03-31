@@ -8715,7 +8715,123 @@ configure_usb_bt_hard_block_interactive() {
   if [[ -n "$current_hard_block_ids" ]]; then
     note "Current hard-block scope: $current_hard_block_ids"
   fi
+  local match_mode include_ids exclude_ids
+  match_mode="$(awk -F= '/^MATCH_MODE=/{v=$2; gsub(/"/,"",v); gsub(/[[:space:]]/,"",v); print tolower(v); exit}' "$conf" 2>/dev/null || true)"
+  include_ids="$(awk -F= '/^INCLUDE_IDS=/{v=$2; gsub(/"/,"",v); gsub(/[[:space:]]/,"",v); print tolower(v); exit}' "$conf" 2>/dev/null || true)"
+  exclude_ids="$(awk -F= '/^EXCLUDE_IDS=/{v=$2; gsub(/"/,"",v); gsub(/[[:space:]]/,"",v); print tolower(v); exit}' "$conf" 2>/dev/null || true)"
+  match_mode="${match_mode:-auto}"
+  case "$match_mode" in
+    auto|include_only) ;;
+    *) match_mode="auto" ;;
+  esac
 
+  local -a hard_candidate_ids=()
+  local -a hard_candidate_labels=()
+  local -a hard_candidate_index_colors=()
+  local -A seen_hard_candidates=()
+  local usb_devices_glob dev name vid pid manufacturer product line hint
+  local is_bt is_eth is_prn is_stg
+  local bt_hint_plain bt_hint_colored
+  local eth_hint_plain eth_hint_colored
+  local prn_hint_plain prn_hint_colored
+  local stg_hint_plain stg_hint_colored
+  bt_hint_plain="[hint: Bluetooth detected]"
+  bt_hint_colored="[hint: ${C_BOLD}${C_YELLOW}Bluetooth detected${C_RESET}]"
+  eth_hint_plain="[keep-bound: Ethernet]"
+  eth_hint_colored="[keep-bound: ${C_BOLD}${C_GREEN}Ethernet${C_RESET}]"
+  prn_hint_plain="[keep-bound: Printer]"
+  prn_hint_colored="[keep-bound: ${C_BOLD}${C_BLUE}Printer${C_RESET}]"
+  stg_hint_plain="[danger: Storage]"
+  stg_hint_colored="[danger: ${C_BOLD}${C_RED}Storage${C_RESET}]"
+
+  usb_devices_glob="${VFIO_USB_SYSFS_GLOB:-/sys/bus/usb/devices/*}"
+  for dev in $usb_devices_glob; do
+    [[ -f "$dev/idVendor" && -f "$dev/idProduct" ]] || continue
+    name="$(basename "$dev")"
+    [[ "$name" =~ ^[0-9]+-[0-9]+(\.[0-9]+)*$ ]] || continue
+    if ! usb_bt_device_matches_policy_from_conf "$dev" "$match_mode" "$include_ids" "$exclude_ids"; then
+      continue
+    fi
+
+    vid="$(tr -d '\n' <"$dev/idVendor" 2>/dev/null | tr 'A-F' 'a-f')"
+    pid="$(tr -d '\n' <"$dev/idProduct" 2>/dev/null | tr 'A-F' 'a-f')"
+    [[ -n "$vid" && -n "$pid" ]] || continue
+    [[ -n "${seen_hard_candidates[$vid:$pid]:-}" ]] && continue
+    seen_hard_candidates["$vid:$pid"]=1
+
+    manufacturer="$(cat "$dev/manufacturer" 2>/dev/null || true)"
+    product="$(cat "$dev/product" 2>/dev/null || true)"
+    line="$(trim "$name $vid:$pid $manufacturer $product")"
+    hint=""
+    is_bt=0
+    is_eth=0
+    is_prn=0
+    is_stg=0
+    if usb_sysfs_device_is_bluetooth "$dev"; then
+      is_bt=1
+      if (( ENABLE_COLOR )); then
+        hint+=" $bt_hint_colored"
+      else
+        hint+=" $bt_hint_plain"
+      fi
+    fi
+    if usb_sysfs_device_is_ethernet "$dev"; then
+      is_eth=1
+      if (( ENABLE_COLOR )); then
+        hint+=" $eth_hint_colored"
+      else
+        hint+=" $eth_hint_plain"
+      fi
+    fi
+    if usb_sysfs_device_is_printer "$dev"; then
+      is_prn=1
+      if (( ENABLE_COLOR )); then
+        hint+=" $prn_hint_colored"
+      else
+        hint+=" $prn_hint_plain"
+      fi
+    fi
+    if usb_sysfs_device_is_storage "$dev"; then
+      is_stg=1
+      if (( ENABLE_COLOR )); then
+        hint+=" $stg_hint_colored"
+      else
+        hint+=" $stg_hint_plain"
+      fi
+    fi
+    line+="$hint"
+    hard_candidate_ids+=("$vid:$pid")
+    hard_candidate_labels+=("$line")
+    if (( is_stg )); then
+      hard_candidate_index_colors+=("${C_BOLD}${C_RED}")
+    elif (( is_bt )); then
+      hard_candidate_index_colors+=("${C_BOLD}${C_YELLOW}")
+    elif (( is_eth )); then
+      hard_candidate_index_colors+=("${C_BOLD}${C_GREEN}")
+    elif (( is_prn )); then
+      hard_candidate_index_colors+=("${C_BOLD}${C_BLUE}")
+    else
+      hard_candidate_index_colors+=("")
+    fi
+  done
+
+  if (( ${#hard_candidate_ids[@]} > 0 )); then
+    note "Detected mitigation-eligible USB targets under current policy:"
+    local i idx_text
+    for i in "${!hard_candidate_ids[@]}"; do
+      idx_text="[$((i+1))]"
+      if (( ENABLE_COLOR )) && [[ -n "${hard_candidate_index_colors[$i]:-}" ]]; then
+        idx_text="${hard_candidate_index_colors[$i]}[$((i+1))]${C_RESET}"
+      fi
+      say "  ${idx_text} ${hard_candidate_labels[$i]}"
+    done
+    note "You can select by number (for example: 1 2) or by direct VID:PID patterns."
+  else
+    note "No mitigation-eligible USB targets are currently detected under active policy."
+    note "You can still enter direct VID:PID patterns manually."
+  fi
+
+  local in out answer interactive_in_fd target_ids
   local in out answer interactive_in_fd target_ids
   interactive_in_fd=""
   in="${VFIO_INTERACTIVE_IN:-/dev/stdin}"
@@ -8727,7 +8843,7 @@ configure_usb_bt_hard_block_interactive() {
   if [[ -n "${VFIO_INTERACTIVE_IN:-}" ]]; then
     exec {interactive_in_fd}<"$in"
   fi
-  printf '%s' "Enter hard-block VID:PID patterns (comma/space separated, ENTER for all matched): " >"$out"
+  printf '%s' "Enter hard-block targets (numbers and/or VID:PID patterns, comma/space separated, ENTER for all matched): " >"$out"
   if [[ -n "$interactive_in_fd" ]]; then
     read -r -u "$interactive_in_fd" answer || answer=""
   else
@@ -8740,9 +8856,40 @@ configure_usb_bt_hard_block_interactive() {
 
   target_ids=""
   if [[ -n "$answer" ]]; then
-    target_ids="$(normalize_usb_id_pattern_csv "$answer")"
+    answer="${answer//,/ }"
+    local token idx id lhs rhs
+    local -A selected_hard=()
+    for token in $answer; do
+      id=""
+      if [[ "$token" =~ ^[0-9]+$ ]]; then
+        if (( ${#hard_candidate_ids[@]} == 0 )); then
+          note "Ignoring numeric selection without listed targets: $token"
+          continue
+        fi
+        if (( token < 1 || token > ${#hard_candidate_ids[@]} )); then
+          note "Ignoring out-of-range selection: $token"
+          continue
+        fi
+        idx=$((token-1))
+        id="${hard_candidate_ids[$idx]}"
+      elif [[ "$token" =~ ^[0-9A-Fa-fxX\*]+:[0-9A-Fa-fxX\*]+$ ]]; then
+        lhs="$(normalize_usb_id_component "${token%%:*}")"
+        rhs="$(normalize_usb_id_component "${token##*:}")"
+        if [[ -n "$lhs" && -n "$rhs" ]]; then
+          id="${lhs}:${rhs}"
+        fi
+      else
+        note "Ignoring invalid token: $token"
+        continue
+      fi
+      [[ -n "$id" ]] || continue
+      if [[ -z "${selected_hard[$id]:-}" ]]; then
+        selected_hard["$id"]=1
+        target_ids+="${target_ids:+,}$id"
+      fi
+    done
     if [[ -z "$target_ids" ]]; then
-      note "No valid hard-block VID:PID patterns entered; defaulting to all matched targets."
+      note "No valid hard-block selection entered; defaulting to all matched targets."
     fi
   fi
 
