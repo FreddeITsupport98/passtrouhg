@@ -1,5 +1,13 @@
 # Changelog
 ## Unreleased
+- 2026-03-31 20:12 UTC: Extended USB mitigation effective-target color rendering in `vfio.sh`:
+  - summary totals now colorize `mitigate`, `hard-block`, and `eee-off` counters to match their corresponding state-tag colors when `ENABLE_COLOR=1`,
+  - plain no-color totals output remains unchanged for `ENABLE_COLOR=0`,
+  - updated `regression/usb-storage-exclusion-regression.sh` `case20` assertions to validate colored totals counters in color-enabled output.
+- 2026-03-31 20:10 UTC: Added colorized USB mitigation effective-target status rendering in `vfio.sh`:
+  - `[MITIGATE]`, `[HOST-BOUND]`, `[HARD-BLOCK]`, and `[EEE-OFF]` tags now render with explicit per-state colors when `ENABLE_COLOR=1` while retaining plain-text fallback when color is disabled,
+  - legend output now mirrors those same colored state tags for faster status scanning consistency with the rest of the mitigation flow,
+  - extended `regression/usb-storage-exclusion-regression.sh` with `case20` to validate colored legend tags, colored stacked state tags, and unchanged summary totals.
 - 2026-03-31 20:00 UTC: Clarified USB mitigation bluetooth.service guard prompt/status messaging in `vfio.sh`:
   - flow now prints explicit current status (`enabled`/`disabled`) before the yes/no prompt,
   - unchanged branch now reports explicit final state (`bluetooth.service stop/start integration remains <enabled|disabled>`) instead of generic `unchanged`,

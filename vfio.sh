@@ -8949,7 +8949,23 @@ print_usb_bt_mitigation_target_summary() {
   note "USB_BT_STOP_BLUETOOTH_SERVICE=${stop_service}"
   note "USB_BT_HARD_BLOCK=${hard_block} USB_BT_HARD_BLOCK_IDS=${hard_block_ids:-<all matched targets>}"
   note "USB_ETHERNET_EEE_OFF=${eee_off} USB_ETHERNET_EEE_IDS=${eee_ids:-<none>}"
-  note "Legend: [MITIGATE]=detach target [HOST-BOUND]=not detached [HARD-BLOCK]=authorized 0/1 target [EEE-OFF]=USB ethernet ethtool target"
+  local tag_mitigate_plain tag_host_bound_plain tag_hard_block_plain tag_eee_off_plain
+  local tag_mitigate tag_host_bound tag_hard_block tag_eee_off
+  tag_mitigate_plain="[MITIGATE]"
+  tag_host_bound_plain="[HOST-BOUND]"
+  tag_hard_block_plain="[HARD-BLOCK]"
+  tag_eee_off_plain="[EEE-OFF]"
+  tag_mitigate="$tag_mitigate_plain"
+  tag_host_bound="$tag_host_bound_plain"
+  tag_hard_block="$tag_hard_block_plain"
+  tag_eee_off="$tag_eee_off_plain"
+  if (( ENABLE_COLOR )); then
+    tag_mitigate="[${C_BOLD}${C_YELLOW}MITIGATE${C_RESET}]"
+    tag_host_bound="[${C_BOLD}${C_GREEN}HOST-BOUND${C_RESET}]"
+    tag_hard_block="[${C_BOLD}${C_RED}HARD-BLOCK${C_RESET}]"
+    tag_eee_off="[${C_BOLD}${C_BLUE}EEE-OFF${C_RESET}]"
+  fi
+  note "Legend: ${tag_mitigate}=detach target ${tag_host_bound}=not detached ${tag_hard_block}=authorized 0/1 target ${tag_eee_off}=USB ethernet ethtool target"
 
   local usb_devices_glob dev name vid pid manufacturer product desc tags
   local scanned matched hard_matched eee_matched
@@ -8971,18 +8987,18 @@ print_usb_bt_mitigation_target_summary() {
     scanned=$((scanned + 1))
 
     if usb_bt_device_matches_policy_from_conf "$dev" "$match_mode" "$include_ids" "$exclude_ids"; then
-      tags="[MITIGATE]"
+      tags="${tag_mitigate}"
       matched=$((matched + 1))
       if usb_bt_device_matches_hard_block_scope_from_conf "$dev" "$hard_block" "$hard_block_ids"; then
-        tags="${tags}[HARD-BLOCK]"
+        tags="${tags}${tag_hard_block}"
         hard_matched=$((hard_matched + 1))
       fi
       if usb_bt_device_matches_eee_scope_from_conf "$dev" "$eee_off" "$eee_ids"; then
-        tags="${tags}[EEE-OFF]"
+        tags="${tags}${tag_eee_off}"
         eee_matched=$((eee_matched + 1))
       fi
     else
-      tags="[HOST-BOUND]"
+      tags="${tag_host_bound}"
     fi
     if [[ -n "$desc" ]]; then
       note "  - ${tags} ${name} ${vid}:${pid} ${desc}"
@@ -8994,7 +9010,16 @@ print_usb_bt_mitigation_target_summary() {
     note "No USB devices detected for target summary."
     return 0
   fi
-  note "Summary totals: scanned=$scanned mitigate=$matched hard-block=$hard_matched eee-off=$eee_matched"
+  local matched_display hard_matched_display eee_matched_display
+  matched_display="$matched"
+  hard_matched_display="$hard_matched"
+  eee_matched_display="$eee_matched"
+  if (( ENABLE_COLOR )); then
+    matched_display="${C_BOLD}${C_YELLOW}${matched}${C_RESET}"
+    hard_matched_display="${C_BOLD}${C_RED}${hard_matched}${C_RESET}"
+    eee_matched_display="${C_BOLD}${C_BLUE}${eee_matched}${C_RESET}"
+  fi
+  note "Summary totals: scanned=$scanned mitigate=${matched_display} hard-block=${hard_matched_display} eee-off=${eee_matched_display}"
 }
 configure_usb_bt_policy_mode_interactive() {
   # Prompt for default Bluetooth-only mode vs advanced include_only mode.

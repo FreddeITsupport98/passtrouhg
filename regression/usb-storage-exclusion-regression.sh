@@ -762,6 +762,41 @@ assert_eq "case19 service-guard unchanged keeps changed flag cleared" "0" "${USB
 assert_eq "case19 service-guard unchanged uses one yes/no prompt" "1" "$prompt_yn_calls"
 assert_contains_text "case19 service-guard unchanged reports current enabled state" "Current status: bluetooth.service stop/start integration is enabled." "$case19_stdout_text"
 assert_contains_text "case19 service-guard unchanged reports explicit unchanged status" "bluetooth.service stop/start integration remains <enabled>." "$case19_stdout_text"
+# Case 20: Effective target summary should colorize state tags and legend when color output is enabled.
+case20_conf="$tmp_dir/case20-colorized-summary.conf"
+case20_stdout="$tmp_dir/case20-colorized-summary-stdout.txt"
+case20_stderr="$tmp_dir/case20-colorized-summary-stderr.txt"
+cat >"$case20_conf" <<EOF
+MATCH_MODE="include_only"
+INCLUDE_IDS="bbbb:0002"
+EXCLUDE_IDS="aaaa:0001"
+USB_BT_STOP_BLUETOOTH_SERVICE="1"
+USB_BT_HARD_BLOCK="1"
+USB_BT_HARD_BLOCK_IDS=""
+USB_ETHERNET_EEE_OFF="1"
+USB_ETHERNET_EEE_IDS="bbbb:0002"
+EOF
+USB_BT_MATCH_CONF="$case20_conf"
+VFIO_USB_SYSFS_GLOB="$usb_fake_root/*"
+BT_USB_DEVICE_NAME="1-2"
+ENABLE_COLOR=1
+print_usb_bt_mitigation_target_summary >"$case20_stdout" 2>"$case20_stderr"
+case20_stdout_text="$(cat "$case20_stdout")"
+case20_tag_mitigate="[${C_BOLD}${C_YELLOW}MITIGATE${C_RESET}]"
+case20_tag_host_bound="[${C_BOLD}${C_GREEN}HOST-BOUND${C_RESET}]"
+case20_tag_hard_block="[${C_BOLD}${C_RED}HARD-BLOCK${C_RESET}]"
+case20_tag_eee_off="[${C_BOLD}${C_BLUE}EEE-OFF${C_RESET}]"
+case20_total_mitigate="${C_BOLD}${C_YELLOW}1${C_RESET}"
+case20_total_hard_block="${C_BOLD}${C_RED}1${C_RESET}"
+case20_total_eee_off="${C_BOLD}${C_BLUE}1${C_RESET}"
+assert_contains_text "case20 summary legend renders colorized mitigate tag" "${case20_tag_mitigate}=detach target" "$case20_stdout_text"
+assert_contains_text "case20 summary legend renders colorized host-bound tag" "${case20_tag_host_bound}=not detached" "$case20_stdout_text"
+assert_contains_text "case20 summary legend renders colorized hard-block tag" "${case20_tag_hard_block}=authorized 0/1 target" "$case20_stdout_text"
+assert_contains_text "case20 summary legend renders colorized eee-off tag" "${case20_tag_eee_off}=USB ethernet ethtool target" "$case20_stdout_text"
+assert_contains_text "case20 summary colorizes host-bound device status" "${case20_tag_host_bound} 1-1 aaaa:0001 SanDisk Portable SSD" "$case20_stdout_text"
+assert_contains_text "case20 summary colorizes stacked mitigate hard-block and eee-off tags" "${case20_tag_mitigate}${case20_tag_hard_block}${case20_tag_eee_off} 1-2 bbbb:0002 Logitech USB Receiver" "$case20_stdout_text"
+assert_contains_text "case20 summary totals remain correct with colorized counters" "Summary totals: scanned=2 mitigate=${case20_total_mitigate} hard-block=${case20_total_hard_block} eee-off=${case20_total_eee_off}" "$case20_stdout_text"
+
 
 if (( fail != 0 )); then
   printf '\nFAIL SUMMARY (%d)\n' "${#FAILED_ASSERTIONS[@]}" >&2
