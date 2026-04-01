@@ -796,6 +796,49 @@ assert_contains_text "case20 summary legend renders colorized eee-off tag" "${ca
 assert_contains_text "case20 summary colorizes host-bound device status" "${case20_tag_host_bound} 1-1 aaaa:0001 SanDisk Portable SSD" "$case20_stdout_text"
 assert_contains_text "case20 summary colorizes stacked mitigate hard-block and eee-off tags" "${case20_tag_mitigate}${case20_tag_hard_block}${case20_tag_eee_off} 1-2 bbbb:0002 Logitech USB Receiver" "$case20_stdout_text"
 assert_contains_text "case20 summary totals remain correct with colorized counters" "Summary totals: scanned=2 mitigate=${case20_total_mitigate} hard-block=${case20_total_hard_block} eee-off=${case20_total_eee_off}" "$case20_stdout_text"
+# Case 21: Disabling hard-block should restore authorized=1 for previously hard-blocked matched targets.
+case21_conf="$tmp_dir/case21-hard-block-disable-restore.conf"
+case21_input="$tmp_dir/case21-hard-block-disable-restore-input.txt"
+case21_out="$tmp_dir/case21-hard-block-disable-restore-prompt.txt"
+case21_stdout="$tmp_dir/case21-hard-block-disable-restore-stdout.txt"
+case21_stderr="$tmp_dir/case21-hard-block-disable-restore-stderr.txt"
+cat >"$case21_conf" <<'EOF'
+MATCH_MODE="include_only"
+INCLUDE_IDS="bbbb:0002"
+EXCLUDE_IDS=""
+USB_BT_STOP_BLUETOOTH_SERVICE="1"
+USB_BT_HARD_BLOCK="1"
+USB_BT_HARD_BLOCK_IDS="bbbb:0002"
+USB_ETHERNET_EEE_OFF="0"
+USB_ETHERNET_EEE_IDS=""
+EOF
+: >"$case21_input"
+printf '0\n' >"$usb_fake_root/1-1/authorized"
+printf '0\n' >"$usb_fake_root/1-2/authorized"
+USB_BT_MATCH_CONF="$case21_conf"
+VFIO_USB_SYSFS_GLOB="$usb_fake_root/*"
+VFIO_INTERACTIVE_IN="$case21_input"
+VFIO_INTERACTIVE_OUT="$case21_out"
+BT_USB_DEVICE_NAME=""
+ENABLE_COLOR=0
+prompt_yn_calls=0
+confirm_phrase_calls=0
+PROMPT_RESPONSES=(1)
+CONFIRM_RESPONSES=()
+configure_usb_bt_hard_block_interactive >"$case21_stdout" 2>"$case21_stderr"
+case21_hard_block="$(awk -F= '/^USB_BT_HARD_BLOCK=/{gsub(/"/,"",$2); print $2; exit}' "$case21_conf")"
+case21_hard_block_ids="$(awk -F= '/^USB_BT_HARD_BLOCK_IDS=/{gsub(/"/,"",$2); print $2; exit}' "$case21_conf")"
+case21_target_auth="$(tr -d '\n' <"$usb_fake_root/1-2/authorized" 2>/dev/null || true)"
+case21_non_target_auth="$(tr -d '\n' <"$usb_fake_root/1-1/authorized" 2>/dev/null || true)"
+case21_stdout_text="$(cat "$case21_stdout")"
+assert_eq "case21 disabling hard-block flips config flag to disabled" "0" "$case21_hard_block"
+assert_eq "case21 disabling hard-block clears hard-block scope IDs" "" "$case21_hard_block_ids"
+assert_eq "case21 disabling hard-block restores authorized state for scoped target" "1" "$case21_target_auth"
+assert_eq "case21 disabling hard-block does not change non-target authorized state" "0" "$case21_non_target_auth"
+assert_eq "case21 disabling hard-block marks changed state" "1" "${USB_BT_HARD_BLOCK_CHANGED:-}"
+assert_eq "case21 disabling hard-block uses one yes/no prompt" "1" "$prompt_yn_calls"
+assert_contains_text "case21 disabling hard-block reports authorization restore action" "Restored USB authorized=1 for 1-2 (bbbb:0002) while disabling hard-block." "$case21_stdout_text"
+assert_contains_text "case21 disabling hard-block reports disabled summary" "Disabled aggressive USB hard-block fallback." "$case21_stdout_text"
 
 
 if (( fail != 0 )); then

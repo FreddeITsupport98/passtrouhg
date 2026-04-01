@@ -1,5 +1,9 @@
 # Changelog
 ## Unreleased
+- 2026-04-01 19:49 UTC: Improved USB mitigation hard-block disable behavior in `vfio.sh`:
+  - `configure_usb_bt_hard_block_interactive` now restores `authorized=1` for devices that matched the previously active hard-block policy when hard-block is turned off,
+  - prevents stale `authorized=0` state after users disable hard-block, so devices are unblocked immediately without manual sysfs writes,
+  - added regression coverage in `regression/usb-storage-exclusion-regression.sh` (`case21`) to validate scoped authorization restore on hard-block disable.
 - 2026-03-31 20:12 UTC: Extended USB mitigation effective-target color rendering in `vfio.sh`:
   - summary totals now colorize `mitigate`, `hard-block`, and `eee-off` counters to match their corresponding state-tag colors when `ENABLE_COLOR=1`,
   - plain no-color totals output remains unchanged for `ENABLE_COLOR=0`,

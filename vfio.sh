@@ -8347,6 +8347,47 @@ usb_bt_device_matches_hard_block_scope_from_conf() {
   [[ -n "$vid" && -n "$pid" ]] || return 1
   usb_id_in_csv_patterns "$hard_block_ids" "$vid" "$pid"
 }
+restore_usb_bt_authorized_targets_for_hard_block_disable() {
+  # When hard-block is switched off, restore authorized=1 for targets that
+  # matched the previously active hard-block policy.
+  local match_mode="$1" include_ids="$2" exclude_ids="$3" hard_block_ids="$4"
+  local usb_devices_glob dev name vid pid auth_before restored_count
+  restored_count=0
+  usb_devices_glob="${VFIO_USB_SYSFS_GLOB:-/sys/bus/usb/devices/*}"
+  for dev in $usb_devices_glob; do
+    [[ -f "$dev/idVendor" && -f "$dev/idProduct" ]] || continue
+    name="$(basename "$dev")"
+    [[ "$name" =~ ^[0-9]+-[0-9]+(\.[0-9]+)*$ ]] || continue
+    if ! usb_bt_device_matches_policy_from_conf "$dev" "$match_mode" "$include_ids" "$exclude_ids"; then
+      continue
+    fi
+    if ! usb_bt_device_matches_hard_block_scope_from_conf "$dev" "1" "$hard_block_ids"; then
+      continue
+    fi
+    [[ -f "$dev/authorized" ]] || continue
+    auth_before="$(tr -d '\n' <"$dev/authorized" 2>/dev/null || true)"
+    if [[ "$auth_before" == "1" ]]; then
+      continue
+    fi
+    vid="$(normalize_usb_id_component "$(cat "$dev/idVendor" 2>/dev/null || echo '?')")"
+    pid="$(normalize_usb_id_component "$(cat "$dev/idProduct" 2>/dev/null || echo '?')")"
+    if (( DRY_RUN )); then
+      note "DRY RUN: would restore USB authorized=1 for $name (${vid}:${pid}) while disabling hard-block."
+      restored_count=$((restored_count + 1))
+      continue
+    fi
+    if [[ -w "$dev/authorized" ]] && echo "1" >"$dev/authorized" 2>/dev/null; then
+      note "Restored USB authorized=1 for $name (${vid}:${pid}) while disabling hard-block."
+      restored_count=$((restored_count + 1))
+    else
+      note "Could not restore USB authorized=1 for $name (${vid}:${pid}); restore manually if needed."
+    fi
+  done
+  if (( restored_count == 0 )); then
+    note "No currently hard-blocked USB targets required authorized-state restore."
+  fi
+  return 0
+}
 usb_bt_device_matches_eee_scope_from_conf() {
   local dev="$1" eee_off="$2" eee_ids="$3" vid pid
   [[ "$eee_off" == "1" ]] || return 1
@@ -8682,11 +8723,21 @@ configure_usb_bt_hard_block_interactive() {
     fi
   fi
 
-  local current_hard_block current_hard_block_ids
+  local current_hard_block current_hard_block_ids current_match_mode current_include_ids current_exclude_ids
   current_hard_block="$(awk -F= '/^USB_BT_HARD_BLOCK=/{v=$2; gsub(/"/,"",v); gsub(/[[:space:]]/,"",v); print tolower(v); exit}' "$conf" 2>/dev/null || true)"
   current_hard_block_ids="$(awk -F= '/^USB_BT_HARD_BLOCK_IDS=/{v=$2; gsub(/"/,"",v); gsub(/[[:space:]]/,"",v); print tolower(v); exit}' "$conf" 2>/dev/null || true)"
+  current_match_mode="$(awk -F= '/^MATCH_MODE=/{v=$2; gsub(/"/,"",v); gsub(/[[:space:]]/,"",v); print tolower(v); exit}' "$conf" 2>/dev/null || true)"
+  current_include_ids="$(awk -F= '/^INCLUDE_IDS=/{v=$2; gsub(/"/,"",v); gsub(/[[:space:]]/,"",v); print tolower(v); exit}' "$conf" 2>/dev/null || true)"
+  current_exclude_ids="$(awk -F= '/^EXCLUDE_IDS=/{v=$2; gsub(/"/,"",v); gsub(/[[:space:]]/,"",v); print tolower(v); exit}' "$conf" 2>/dev/null || true)"
   current_hard_block="$(normalize_usb_bt_boolean_flag "$current_hard_block")"
   current_hard_block_ids="${current_hard_block_ids:-}"
+  current_match_mode="${current_match_mode:-auto}"
+  case "$current_match_mode" in
+    auto|include_only) ;;
+    *) current_match_mode="auto" ;;
+  esac
+  current_include_ids="${current_include_ids:-}"
+  current_exclude_ids="${current_exclude_ids:-}"
 
   say
   hdr "USB mitigation hard-block fallback"
@@ -8702,6 +8753,9 @@ configure_usb_bt_hard_block_interactive() {
     if [[ "$current_hard_block" == "0" && -z "$current_hard_block_ids" ]]; then
       note "USB hard-block settings unchanged (disabled)."
       return 0
+    fi
+    if [[ "$current_hard_block" == "1" ]]; then
+      restore_usb_bt_authorized_targets_for_hard_block_disable "$current_match_mode" "$current_include_ids" "$current_exclude_ids" "$current_hard_block_ids" || true
     fi
     if (( DRY_RUN )); then
       note "DRY RUN: would set USB_BT_HARD_BLOCK=\"0\" and USB_BT_HARD_BLOCK_IDS=\"\" in $conf"

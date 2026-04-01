@@ -24,6 +24,7 @@ The script is designed to be **interactive, defensive and reversible**, so that 
 ## Unreleased
 - No pending unreleased README notes.
 - Add upcoming updates below this line as new work lands.
+- USB mitigation hard-block disable flow now automatically restores `authorized=1` for previously hard-blocked, policy-matched USB targets so turning hard-block off immediately unblocks those devices without requiring manual sysfs commands.
 - Colorized USB mitigation effective-target status tags and legend output (`[MITIGATE]`, `[HOST-BOUND]`, `[HARD-BLOCK]`, `[EEE-OFF]`) so summary-state rendering now matches the rest of the colored mitigation flow when `ENABLE_COLOR=1`, with plain-text fallback preserved when color is disabled.
 - Colorized USB mitigation effective-target summary totals counters (`mitigate`, `hard-block`, `eee-off`) to match state-tag colors when `ENABLE_COLOR=1`, while keeping plain numeric totals in no-color mode.
 - Clarified USB mitigation bluetooth-service guard UX so the flow now prints explicit current status (`enabled`/`disabled`) and explicit unchanged-state output (`remains <enabled|disabled>`) instead of ambiguous wording.
